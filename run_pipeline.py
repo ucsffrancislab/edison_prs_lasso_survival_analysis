@@ -6,9 +6,9 @@ Builds a LASSO Cox PH survival model using pooled discovery cohorts (i370, onco,
 then validates on the held-out CIDR cohort. Analyzes 4 glioma subtypes.
 
 Usage:
-    python run_pipeline.py --data-dir /path/to/data --output-dir results
-    python run_pipeline.py --data-dir /path/to/data --n-models 100 --debug  # dev test
-    python run_pipeline.py --test  # smoke test
+    python3 run_pipeline.py --data-dir /path/to/data --output-dir results
+    python3 run_pipeline.py --data-dir /path/to/data --n-models 100 --debug  # dev test
+    python3 run_pipeline.py --test  # smoke test
 """
 
 import os

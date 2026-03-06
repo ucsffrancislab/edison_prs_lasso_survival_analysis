@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prs_lasso_cox
-#SBATCH --output=logs/prs_lasso_%j.out
-#SBATCH --error=logs/prs_lasso_%j.err
+#SBATCH --output=prs_lasso_%j.out
+#SBATCH --error=prs_lasso_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -17,10 +17,10 @@ set -euo pipefail
 mkdir -p logs
 
 # Load modules (adjust for your HPC)
-module load python/3.12 2>/dev/null || true
+#module load python/3.12 2>/dev/null || true
 
 # Activate virtual environment
-source venv/bin/activate 2>/dev/null || true
+#source venv/bin/activate 2>/dev/null || true
 
 # Set data and output directories (override via command line)
 DATA_DIR="${1:-.}"
@@ -35,7 +35,7 @@ echo "CPUs: ${SLURM_CPUS_PER_TASK:-64}"
 echo "Extra args: ${EXTRA_ARGS}"
 
 # Run the main pipeline
-python run_pipeline.py \
+python3 run_pipeline.py \
     --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     --n-jobs ${SLURM_CPUS_PER_TASK:-64} \

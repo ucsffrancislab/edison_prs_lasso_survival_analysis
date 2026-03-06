@@ -58,6 +58,7 @@ N_MODELS = None  # Set to integer for testing (e.g., 100); None for all models
 
 def parse_args():
     """Parse command-line arguments and update config accordingly."""
+    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG
     parser = argparse.ArgumentParser(description='PRS LASSO Cox Survival Analysis Pipeline')
     parser.add_argument('--data-dir', type=str, default=DATA_DIR,
                         help='Directory containing input data files')
@@ -75,7 +76,6 @@ def parse_args():
                         help='Run only this subtype (for array jobs)')
     args = parser.parse_args()
 
-    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG
     DATA_DIR = args.data_dir
     OUTPUT_DIR = args.output_dir
     N_MODELS = args.n_models

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prs_lasso_array
-#SBATCH --output=logs/prs_lasso_%A_%a.out
-#SBATCH --error=logs/prs_lasso_%A_%a.err
+#SBATCH --output=prs_lasso_%A_%a.out
+#SBATCH --error=prs_lasso_%A_%a.err
 #SBATCH --array=0-3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -17,8 +17,8 @@ set -euo pipefail
 mkdir -p logs
 
 # Load modules
-module load python/3.12 2>/dev/null || true
-source venv/bin/activate 2>/dev/null || true
+#module load python/3.12 2>/dev/null || true
+#source venv/bin/activate 2>/dev/null || true
 
 # Map array index to subtype
 SUBTYPES=("idh_wildtype" "lgg_idh_mutant_pq_intact" "hgg_idh_mutant_pq_intact" "lgg_idh_mutant_pq_codel")
@@ -33,7 +33,7 @@ echo "Start time: $(date)"
 echo "Subtype: ${SUBTYPE}"
 echo "Array task ID: ${SLURM_ARRAY_TASK_ID}"
 
-python run_pipeline.py \
+python3 run_pipeline.py \
     --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     --n-jobs ${SLURM_CPUS_PER_TASK:-64} \
