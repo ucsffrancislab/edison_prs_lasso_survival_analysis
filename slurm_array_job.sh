@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prs_lasso_array
-#SBATCH --output=prs_lasso_%A_%a.out
-#SBATCH --error=prs_lasso_%A_%a.err
+#SBATCH --output=prs_lasso_%A_%a.out.txt
+#SBATCH --error=prs_lasso_%A_%a.err.txt
 #SBATCH --array=0-3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

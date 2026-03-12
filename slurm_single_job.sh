@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prs_lasso_cox
-#SBATCH --output=prs_lasso_%j.out
-#SBATCH --error=prs_lasso_%j.err
+#SBATCH --output=prs_lasso_%j.out.txt
+#SBATCH --error=prs_lasso_%j.err.txt
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
