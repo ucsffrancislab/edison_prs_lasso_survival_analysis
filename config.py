@@ -53,14 +53,14 @@ MIN_COHORTS_FOR_DIRECTION = 3
 # Hard cap on the number of PGS candidates entering LASSO, applied after the
 # EPV cap.  Acts as a secondary safety net independent of event count.
 # Set to None to disable.
-MAX_CANDIDATES_PREFILT  = 500
+#MAX_CANDIDATES_PREFILT  = 500
 
 # Alpha-selection rule for the LASSO CV path.
 #   'best' : alpha that maximises mean CV C-index  (original behaviour)
 #   '1se'  : largest alpha (most regularisation) whose mean CV C-index is
 #            within 1 SE of the best -- standard glmnet heuristic, yields
 #            sparser models and is generally preferred to reduce overfitting.
-LASSO_ALPHA_RULE        = '1se'
+#LASSO_ALPHA_RULE        = '1se'
 
 # Require consistent direction of effect across cohorts (uses MIN_COHORTS_FOR_DIRECTION above)
 REQUIRE_CONSISTENT_DIR  = True
