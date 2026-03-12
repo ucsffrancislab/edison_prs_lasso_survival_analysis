@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 warnings.filterwarnings('ignore')
 
 # Import config
+import config
 from config import *
 
 def dprint(*args, **kwargs):
@@ -182,6 +183,42 @@ def fit_full_cox_batch(df, pgs_list, cov_cols):
         except Exception:
             pass
     return pd.DataFrame(results)
+
+
+def fit_baseline_cox(train_df, val_df, cov_cols, label):
+    """Fit a covariate-only Cox PH model and return train/val C-indices.
+
+    Parameters
+    ----------
+    train_df : DataFrame  discovery subset (must contain cov_cols + survdays + vstatus)
+    val_df   : DataFrame  validation subset (same columns required)
+    cov_cols : list       covariate column names to use
+    label    : str        human-readable label for log output
+
+    Returns
+    -------
+    dict with keys: train_cindex, val_cindex (None if val fitting fails)
+    """
+    result = {'label': label, 'train_cindex': None, 'val_cindex': None}
+    try:
+        cols = cov_cols + ['survdays', 'vstatus']
+        tr = train_df[cols].dropna()
+        if len(tr) < 10 or tr['vstatus'].sum() < 5:
+            return result
+        cph = CoxPHFitter()
+        cph.fit(tr, duration_col='survdays', event_col='vstatus', show_progress=False)
+        risk_tr = cph.predict_partial_hazard(tr).values.flatten()
+        result['train_cindex'] = concordance_index_censored(
+            tr['vstatus'].astype(bool).values, tr['survdays'].values, risk_tr)[0]
+
+        va = val_df[cols].dropna()
+        if len(va) >= 10 and va['vstatus'].sum() >= 5:
+            risk_va = cph.predict_partial_hazard(va).values.flatten()
+            result['val_cindex'] = concordance_index_censored(
+                va['vstatus'].astype(bool).values, va['survdays'].values, risk_va)[0]
+    except Exception as e:
+        dprint(f"  Baseline Cox failed for '{label}': {e}")
+    return result
 
 
 def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols, output_dir):
@@ -397,7 +434,8 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     cidr_sub = subset_by_subtype(cidr_df, subtype_name, criteria)
     if cidr_sub is None:
         return {'status': 'no_cidr_validation', 'train_cindex': train_ci,
-                'n_nonzero_pgs': int(nonzero.sum()), 'best_cv_cindex': mean_cv[selected_idx]}
+                'n_nonzero_pgs': int(nonzero.sum()), 'best_cv_cindex': mean_cv[selected_idx],
+                'baselines': {}}
 
     cidr_sub = cidr_sub.copy()
     if 'source_Mayo' in cov_col_list:
@@ -421,6 +459,42 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
 
     print(f"  Validation C-index: {val_ci:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
+
+    # ------------------------------------------------------------------
+    # Baseline models: covariate-only C-indices for comparison
+    #
+    # Three baselines:
+    #   1. clinical_only   : age, sex, grade_numeric, treated
+    #   2. clinical_pcs    : clinical + PC1-PC8
+    #   3. full_covariates : all covariates (cov_col_list, same as LASSO)
+    #
+    # For each we fit on the discovery subset and evaluate on CIDR,
+    # mirroring exactly what the PGS model does.  cohort dummies are
+    # included in full_covariates but zeroed-out in CIDR (same as above).
+    # ------------------------------------------------------------------
+    CLINICAL_COLS  = ['age', 'sex', 'grade_numeric', 'treated']
+    PC_COLS        = [f'PC{i}' for i in range(1, 9)]
+
+    clinical_cols  = [c for c in CLINICAL_COLS if c in cov_col_list]
+    clinical_pc_cols = [c for c in CLINICAL_COLS + PC_COLS if c in cov_col_list]
+    full_cov_cols  = cov_col_list   # already variance-filtered, includes dummies
+
+    # CIDR baseline df needs the same dummy-zeroing as the PGS validation
+    cidr_base = cidr_sub.copy()   # cidr_sub already has source_Mayo and zeroed cohort dummies
+
+    baselines = {}
+    for bl_label, bl_cols in [
+        ('clinical_only',   clinical_cols),
+        ('clinical_pcs',    clinical_pc_cols),
+        ('full_covariates', full_cov_cols),
+    ]:
+        bl = fit_baseline_cox(df_sub, cidr_base, bl_cols, bl_label)
+        baselines[bl_label] = bl
+        tr_str = f"{bl['train_cindex']:.4f}" if bl['train_cindex'] is not None else "n/a"
+        va_str = f"{bl['val_cindex']:.4f}"   if bl['val_cindex']  is not None else "n/a"
+        print(f"  Baseline [{bl_label}]: train={tr_str}, val={va_str}")
+
+    print(f"  PGS model:           train={train_ci:.4f}, val={val_ci:.4f}")
 
     # KM plot
     n_groups = 4 if len(cidr_model) >= 80 else 3
@@ -486,6 +560,13 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
         'best_alpha': best_alpha, 'best_cv_cindex': float(mean_cv[selected_idx]),
         'train_cindex': float(train_ci), 'val_cindex': float(val_ci),
         'val_ci': (float(ci_lo), float(ci_hi)), 'logrank_p': float(lr.p_value),
+        'baselines': {
+            k: {
+                'train_cindex': float(v['train_cindex']) if v['train_cindex'] is not None else None,
+                'val_cindex':   float(v['val_cindex'])   if v['val_cindex']   is not None else None,
+            }
+            for k, v in baselines.items()
+        },
     }
 
 
@@ -526,6 +607,13 @@ def run_smoke_test():
 
 def main():
     args = parse_args()
+
+    # Re-import all config globals that parse_args() may have mutated.
+    # parse_args() updates names in config's own namespace; without this,
+    # run_pipeline.py's module-level copies (from the 'from config import *')
+    # would remain stale at their default values.
+    from config import (DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS,
+                        DEBUG, MODELS_FILE)
 
     if args.test:
         success = run_smoke_test()
