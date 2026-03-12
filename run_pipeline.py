@@ -280,7 +280,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
                     signs[cohort] = np.sign(cph.summary.loc[pgs, 'coef'])
                 except:
                     continue
-            if len(signs) >= 2 and len(set(signs.values())) == 1:
+            if len(signs) >= MIN_COHORTS_FOR_DIRECTION and len(set(signs.values())) == 1:
                 consistent.append(pgs)
 
         print(f"  Consistent direction: {len(consistent)} / {len(sig_pooled)}")
@@ -298,6 +298,11 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     print(f"  EPV cap: {max_pred} (events={n_events})")
     if len(filtered_df) > max_pred:
         filtered_df = filtered_df.head(max_pred)
+
+    # Secondary hard cap (MAX_CANDIDATES_PREFILT)
+    if MAX_CANDIDATES_PREFILT is not None and len(filtered_df) > MAX_CANDIDATES_PREFILT:
+        print(f"  Hard cap: trimming {len(filtered_df)} -> {MAX_CANDIDATES_PREFILT} candidates")
+        filtered_df = filtered_df.head(MAX_CANDIDATES_PREFILT)
 
     final_pgs = filtered_df['pgs'].tolist()
 
@@ -339,8 +344,21 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
 
     mean_cv = np.nanmean(cv_scores, axis=0)
     std_cv = np.nanstd(cv_scores, axis=0)
+
+    # Alpha selection: 'best' maximises CV C-index; '1se' picks the most
+    # regularised alpha whose mean is within 1 SE of the best (glmnet convention).
     best_idx = np.nanargmax(mean_cv)
-    best_alpha = alpha_path[best_idx]
+    if LASSO_ALPHA_RULE == '1se':
+        threshold = mean_cv[best_idx] - std_cv[best_idx]
+        # alpha_path is descending (more regularisation = larger alpha = earlier index)
+        # so we want the smallest index (largest alpha) that still clears the threshold
+        eligible = np.where(mean_cv >= threshold)[0]
+        selected_idx = int(eligible[0])  # highest regularisation among eligible
+        print(f"  Alpha rule: 1se  (best_idx={best_idx}, selected_idx={selected_idx})")
+    else:
+        selected_idx = best_idx
+        print(f"  Alpha rule: best (selected_idx={selected_idx})")
+    best_alpha = alpha_path[selected_idx]
 
     final_m = CoxnetSurvivalAnalysis(l1_ratio=1.0, penalty_factor=penalty_factor,
                                       alphas=[best_alpha], fit_baseline_model=True)
@@ -353,7 +371,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     train_risk = X @ final_coef
     train_ci = concordance_index_censored(y['event'], y['time'], train_risk)[0]
 
-    print(f"  Best alpha: {best_alpha:.6f}, CV C-index: {mean_cv[best_idx]:.4f}")
+    print(f"  Best alpha: {best_alpha:.6f}, CV C-index: {mean_cv[selected_idx]:.4f}")
     print(f"  Non-zero PGS: {nonzero.sum()}, Train C-index: {train_ci:.4f}")
 
     # Save lambda plot
@@ -361,7 +379,8 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     vm = ~np.isnan(mean_cv)
     ax.errorbar(np.log10(alpha_path[vm]), mean_cv[vm], yerr=std_cv[vm],
                 fmt='o-', markersize=2, linewidth=0.5, capsize=1)
-    ax.axvline(np.log10(best_alpha), color='red', linestyle='--')
+    ax.axvline(np.log10(best_alpha), color='red', linestyle='--',
+               label=f'selected ({LASSO_ALPHA_RULE})')
     ax.set_xlabel('log10(alpha)'); ax.set_ylabel('CV C-index')
     ax.set_title(f'{subtype_name}: Lambda Selection')
     plt.tight_layout()
@@ -372,7 +391,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     cidr_sub = subset_by_subtype(cidr_df, subtype_name, criteria)
     if cidr_sub is None:
         return {'status': 'no_cidr_validation', 'train_cindex': train_ci,
-                'n_nonzero_pgs': int(nonzero.sum()), 'best_cv_cindex': mean_cv[best_idx]}
+                'n_nonzero_pgs': int(nonzero.sum()), 'best_cv_cindex': mean_cv[selected_idx]}
 
     cidr_sub = cidr_sub.copy()
     if 'source_Mayo' in cov_col_list:
@@ -458,7 +477,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     return {
         'status': 'complete', 'n_discovery': len(model_df), 'n_events': n_events,
         'n_pgs_candidates': len(final_pgs), 'n_nonzero_pgs': int(nonzero.sum()),
-        'best_alpha': best_alpha, 'best_cv_cindex': float(mean_cv[best_idx]),
+        'best_alpha': best_alpha, 'best_cv_cindex': float(mean_cv[selected_idx]),
         'train_cindex': float(train_ci), 'val_cindex': float(val_ci),
         'val_ci': (float(ci_lo), float(ci_hi)), 'logrank_p': float(lr.p_value),
     }
@@ -528,6 +547,19 @@ def main():
     if N_MODELS is not None:
         pgs_cols = list(np.random.choice(pgs_cols, min(N_MODELS, len(pgs_cols)), replace=False))
         print(f"Subsampled to {len(pgs_cols)} PGS models")
+
+    # Apply model allowlist if provided (--models flag / MODELS_FILE config)
+    if MODELS_FILE is not None:
+        with open(MODELS_FILE) as fh:
+            allowed = {line.strip() for line in fh if line.strip() and not line.startswith('#')}
+        before = len(pgs_cols)
+        pgs_cols = [c for c in pgs_cols if c in allowed]
+        print(f"Model allowlist '{MODELS_FILE}': kept {len(pgs_cols)} / {before} models "
+              f"({before - len(pgs_cols)} dropped)")
+        if len(pgs_cols) == 0:
+            print("ERROR: No PGS models remain after applying allowlist. "
+                  "Check that model IDs in the file match column names in the score files.")
+            sys.exit(1)
 
     # Determine which subtypes to run
     if args.subtype:

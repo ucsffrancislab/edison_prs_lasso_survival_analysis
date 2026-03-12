@@ -31,11 +31,41 @@ SUBTYPES = {
 # Minimum thresholds
 MIN_SAMPLES_PER_SUBTYPE = 20      # Skip subtype if fewer samples than this
 MIN_EVENTS_PER_SUBTYPE  = 10      # Skip subtype if fewer events than this
-EPV_RATIO               = 5       # Events-per-variable: max predictors = n_events / EPV_RATIO
 
-# Pre-filtering thresholds (applied to pooled univariate Cox PH results)
-META_P_THRESHOLD        = 0.05    # Nominal p-value threshold for pre-filtering PGS candidates
-REQUIRE_CONSISTENT_DIR  = True    # Require consistent direction of effect across cohorts
+# ---------------------------------------------------------------------------
+# Parsimony controls
+# ---------------------------------------------------------------------------
+
+# Events-per-variable ratio for EPV cap: max predictors entering LASSO = floor(n_events / EPV_RATIO)
+# Raised from 5 -> 10 to halve the predictor cap and reduce overfitting risk.
+EPV_RATIO               = 10
+
+# Nominal p-value threshold for pre-filtering PGS candidates via full univariate Cox.
+# The score-test screen uses META_P_THRESHOLD * 2 as a looser first pass.
+# Lowered from 0.05 -> 0.01 to admit fewer candidates into LASSO.
+META_P_THRESHOLD        = 0.01
+
+# Require the same direction of effect in at least this many discovery cohorts
+# before a PGS is admitted to LASSO.  Set to len(DISCOVERY_COHORTS) (i.e. 3)
+# to require unanimity across all cohorts; set to 2 for the original behaviour.
+MIN_COHORTS_FOR_DIRECTION = 3
+
+# Hard cap on the number of PGS candidates entering LASSO, applied after the
+# EPV cap.  Acts as a secondary safety net independent of event count.
+# Set to None to disable.
+MAX_CANDIDATES_PREFILT  = 500
+
+# Alpha-selection rule for the LASSO CV path.
+#   'best' : alpha that maximises mean CV C-index  (original behaviour)
+#   '1se'  : largest alpha (most regularisation) whose mean CV C-index is
+#            within 1 SE of the best -- standard glmnet heuristic, yields
+#            sparser models and is generally preferred to reduce overfitting.
+LASSO_ALPHA_RULE        = '1se'
+
+# Require consistent direction of effect across cohorts (uses MIN_COHORTS_FOR_DIRECTION above)
+REQUIRE_CONSISTENT_DIR  = True
+
+# ---------------------------------------------------------------------------
 
 # Cross-validation
 CV_FOLDS = 10
@@ -55,10 +85,14 @@ DATA_DIR = '.'
 # Model subsetting for development/testing
 N_MODELS = None  # Set to integer for testing (e.g., 100); None for all models
 
+# Model allowlist file (set via --models flag)
+# If set, only PGS IDs listed in this file (one per line) will be used.
+MODELS_FILE = None
+
 
 def parse_args():
     """Parse command-line arguments and update config accordingly."""
-    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG
+    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG, MODELS_FILE
     parser = argparse.ArgumentParser(description='PRS LASSO Cox Survival Analysis Pipeline')
     parser.add_argument('--data-dir', type=str, default=DATA_DIR,
                         help='Directory containing input data files')
@@ -66,6 +100,9 @@ def parse_args():
                         help='Directory for output results')
     parser.add_argument('--n-models', type=int, default=None,
                         help='Number of PGS models to sample for testing (default: all)')
+    parser.add_argument('--models', type=str, default=None,
+                        help='Path to file with allowlisted PGS model IDs, one per line. '
+                             'All other models are dropped before the pipeline runs.')
     parser.add_argument('--n-jobs', type=int, default=N_JOBS,
                         help='Number of parallel jobs')
     parser.add_argument('--debug', action='store_true', default=False,
@@ -76,10 +113,11 @@ def parse_args():
                         help='Run only this subtype (for array jobs)')
     args = parser.parse_args()
 
-    DATA_DIR = args.data_dir
+    DATA_DIR   = args.data_dir
     OUTPUT_DIR = args.output_dir
-    N_MODELS = args.n_models
-    N_JOBS = args.n_jobs
-    DEBUG = args.debug
+    N_MODELS   = args.n_models
+    N_JOBS     = args.n_jobs
+    DEBUG      = args.debug
+    MODELS_FILE = args.models
 
     return args
