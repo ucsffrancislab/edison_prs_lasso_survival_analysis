@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-mkdir -p logs
+#mkdir -p logs
 
 # Load modules
 #module load python/3.12 2>/dev/null || true

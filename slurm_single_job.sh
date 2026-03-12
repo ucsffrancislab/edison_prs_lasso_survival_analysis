@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # Create log directory
-mkdir -p logs
+#mkdir -p logs
 
 # Load modules (adjust for your HPC)
 #module load python/3.12 2>/dev/null || true
