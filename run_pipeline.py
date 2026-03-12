@@ -222,7 +222,7 @@ def fit_baseline_cox(train_df, val_df, cov_cols, label):
 
 
 def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
-                    pgs_cols, output_dir):
+                    pgs_cols, output_dir, train_cohorts=None):
     """Process a single glioma subtype through the full pipeline.
 
     Parameters
@@ -234,7 +234,12 @@ def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
     val_name         : str        cohort name for logging/output (e.g. 'cidr')
     pgs_cols         : list       PGS column names to consider
     output_dir       : str        root results directory
+    train_cohorts    : list|None  cohort names present in discovery_pooled; used
+                                  for direction-consistency check.  Defaults to
+                                  DISCOVERY_COHORTS if None (fixed strategy).
     """
+    if train_cohorts is None:
+        train_cohorts = DISCOVERY_COHORTS
     print(f"\n{'='*60}")
     print(f"SUBTYPE: {subtype_name}")
     print(f"{'='*60}")
@@ -303,7 +308,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
     # Direction consistency
     if REQUIRE_CONSISTENT_DIR:
         per_cohort_cov = {}
-        for cohort in DISCOVERY_COHORTS:
+        for cohort in train_cohorts:
             csub = df_sub[df_sub['cohort'] == cohort]
             if len(csub) < 10 or (csub['vstatus'] == 1).sum() < 5:
                 per_cohort_cov[cohort] = None
@@ -714,7 +719,7 @@ def main():
                 try:
                     fold_results[val_cohort] = process_subtype(
                         name, criteria, train_df, val_df, val_cohort,
-                        pgs_cols, fold_out)
+                        pgs_cols, fold_out, train_cohorts=train_cohorts)
                 except Exception as e:
                     print(f"ERROR in {name} / val={val_cohort}: {e}")
                     traceback.print_exc()
