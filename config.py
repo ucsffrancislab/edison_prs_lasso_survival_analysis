@@ -12,6 +12,19 @@ RANDOM_SEED = 42
 DISCOVERY_COHORTS = ['i370', 'onco', 'tcga']
 VALIDATION_COHORT = 'cidr'
 
+# ---------------------------------------------------------------------------
+# Validation strategy
+# ---------------------------------------------------------------------------
+# 'fixed' : original behaviour — train on DISCOVERY_COHORTS, validate on
+#           VALIDATION_COHORT.
+# 'loco'  : Leave-One-Cohort-Out — all cohorts are pooled, then each is held
+#           out in turn as the validation set while the remaining cohorts are
+#           used for training.  Per-fold results are averaged to give a final
+#           mean ± SD C-index.  VALIDATION_COHORT and DISCOVERY_COHORTS are
+#           ignored when CV_STRATEGY = 'loco'; ALL_COHORTS is used instead.
+CV_STRATEGY   = 'loco'
+ALL_COHORTS   = ['i370', 'onco', 'tcga', 'cidr']  # used only by loco
+
 # Covariates used in all Cox PH models
 # 'source' distinguishes two recruitment sources within the onco cohort only;
 # it should be included as a covariate when fitting models within or across cohorts
@@ -39,33 +52,28 @@ MIN_EVENTS_PER_SUBTYPE  = 10      # Skip subtype if fewer events than this
 # Events-per-variable ratio for EPV cap: max predictors entering LASSO = floor(n_events / EPV_RATIO)
 # Raised from 5 -> 10 to halve the predictor cap and reduce overfitting risk.
 EPV_RATIO               = 10
-#EPV_RATIO               = 5
 
 # Nominal p-value threshold for pre-filtering PGS candidates via full univariate Cox.
 # The score-test screen uses META_P_THRESHOLD * 2 as a looser first pass.
 # Lowered from 0.05 -> 0.01 to admit fewer candidates into LASSO.
 META_P_THRESHOLD        = 0.01
-#META_P_THRESHOLD        = 0.05
 
 # Require the same direction of effect in at least this many discovery cohorts
 # before a PGS is admitted to LASSO.  Set to len(DISCOVERY_COHORTS) (i.e. 3)
 # to require unanimity across all cohorts; set to 2 for the original behaviour.
 MIN_COHORTS_FOR_DIRECTION = 3
-#MIN_COHORTS_FOR_DIRECTION = 2
 
 # Hard cap on the number of PGS candidates entering LASSO, applied after the
 # EPV cap.  Acts as a secondary safety net independent of event count.
 # Set to None to disable.
-#MAX_CANDIDATES_PREFILT  = 500
-MAX_CANDIDATES_PREFILT  = None
+MAX_CANDIDATES_PREFILT  = 500
 
 # Alpha-selection rule for the LASSO CV path.
 #   'best' : alpha that maximises mean CV C-index  (original behaviour)
 #   '1se'  : largest alpha (most regularisation) whose mean CV C-index is
 #            within 1 SE of the best -- standard glmnet heuristic, yields
 #            sparser models and is generally preferred to reduce overfitting.
-#LASSO_ALPHA_RULE        = '1se'
-LASSO_ALPHA_RULE        = 'best'
+LASSO_ALPHA_RULE        = '1se'
 
 # Require consistent direction of effect across cohorts (uses MIN_COHORTS_FOR_DIRECTION above)
 REQUIRE_CONSISTENT_DIR  = True
@@ -97,7 +105,7 @@ MODELS_FILE = None
 
 def parse_args():
     """Parse command-line arguments and update config accordingly."""
-    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG, MODELS_FILE
+    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG, MODELS_FILE, CV_STRATEGY
     parser = argparse.ArgumentParser(description='PRS LASSO Cox Survival Analysis Pipeline')
     parser.add_argument('--data-dir', type=str, default=DATA_DIR,
                         help='Directory containing input data files')
@@ -110,6 +118,10 @@ def parse_args():
                              'All other models are dropped before the pipeline runs.')
     parser.add_argument('--n-jobs', type=int, default=N_JOBS,
                         help='Number of parallel jobs')
+    parser.add_argument('--cv-strategy', type=str, default=CV_STRATEGY,
+                        choices=['fixed', 'loco'],
+                        help="Validation strategy: 'fixed' (original) or 'loco' "
+                             "(Leave-One-Cohort-Out)")
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable verbose debug output')
     parser.add_argument('--test', action='store_true', default=False,
@@ -118,11 +130,12 @@ def parse_args():
                         help='Run only this subtype (for array jobs)')
     args = parser.parse_args()
 
-    DATA_DIR   = args.data_dir
-    OUTPUT_DIR = args.output_dir
-    N_MODELS   = args.n_models
-    N_JOBS     = args.n_jobs
-    DEBUG      = args.debug
+    DATA_DIR    = args.data_dir
+    OUTPUT_DIR  = args.output_dir
+    N_MODELS    = args.n_models
+    N_JOBS      = args.n_jobs
+    DEBUG       = args.debug
     MODELS_FILE = args.models
+    CV_STRATEGY = args.cv_strategy
 
     return args

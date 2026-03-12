@@ -221,8 +221,20 @@ def fit_baseline_cox(train_df, val_df, cov_cols, label):
     return result
 
 
-def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols, output_dir):
-    """Process a single glioma subtype through the full pipeline."""
+def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
+                    pgs_cols, output_dir):
+    """Process a single glioma subtype through the full pipeline.
+
+    Parameters
+    ----------
+    subtype_name     : str        e.g. 'idh_wildtype'
+    criteria         : dict       column filters defining the subtype
+    discovery_pooled : DataFrame  pooled training cohorts
+    val_df           : DataFrame  held-out validation cohort (any single cohort)
+    val_name         : str        cohort name for logging/output (e.g. 'cidr')
+    pgs_cols         : list       PGS column names to consider
+    output_dir       : str        root results directory
+    """
     print(f"\n{'='*60}")
     print(f"SUBTYPE: {subtype_name}")
     print(f"{'='*60}")
@@ -430,35 +442,43 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     fig.savefig(os.path.join(subtype_dir, 'lambda_selection.png'), dpi=150)
     plt.close(fig)
 
-    # Step 7: CIDR validation
-    cidr_sub = subset_by_subtype(cidr_df, subtype_name, criteria)
-    if cidr_sub is None:
-        return {'status': 'no_cidr_validation', 'train_cindex': train_ci,
+    # Step 7: Held-out cohort validation
+    val_sub = subset_by_subtype(val_df, subtype_name, criteria)
+    if val_sub is None:
+        return {'status': 'no_val_validation', 'train_cindex': train_ci,
                 'n_nonzero_pgs': int(nonzero.sum()), 'best_cv_cindex': mean_cv[selected_idx],
                 'baselines': {}}
 
-    cidr_sub = cidr_sub.copy()
-    if 'source_Mayo' in cov_col_list:
-        cidr_sub['source_Mayo'] = (cidr_sub['source'] == 'Mayo').astype(float)
-    for cd in cohort_dummy_cols:
-        cidr_sub[cd] = 0.0
+    val_sub = val_sub.copy()
 
-    cidr_model = cidr_sub[feature_cols + ['survdays', 'vstatus']].dropna()
-    X_c = cidr_model[feature_cols].values.astype(np.float64)
-    y_c = np.array([(bool(e), t) for e, t in zip(cidr_model['vstatus'], cidr_model['survdays'])],
+    # Prepare validation covariates:
+    # source_Mayo: set from actual source column if present, else 0
+    if 'source_Mayo' in cov_col_list:
+        if 'source' in val_sub.columns:
+            val_sub['source_Mayo'] = (val_sub['source'] == 'Mayo').astype(float)
+        else:
+            val_sub['source_Mayo'] = 0.0
+
+    # Cohort dummies: val cohort is not one of the training cohorts, so all are 0
+    for cd in cohort_dummy_cols:
+        val_sub[cd] = 0.0
+
+    val_model = val_sub[feature_cols + ['survdays', 'vstatus']].dropna()
+    X_v = val_model[feature_cols].values.astype(np.float64)
+    y_v = np.array([(bool(e), t) for e, t in zip(val_model['vstatus'], val_model['survdays'])],
                     dtype=[('event', bool), ('time', float)])
 
-    cidr_risk = X_c @ final_coef
-    val_ci = concordance_index_censored(y_c['event'], y_c['time'], cidr_risk)[0]
+    val_risk = X_v @ final_coef
+    val_ci = concordance_index_censored(y_v['event'], y_v['time'], val_risk)[0]
 
     # Bootstrap CI
     rng = np.random.RandomState(RANDOM_SEED)
-    boot = [concordance_index_censored(y_c['event'][idx], y_c['time'][idx], cidr_risk[idx])[0]
-            for idx in (rng.choice(len(cidr_risk), len(cidr_risk), True) for _ in range(1000))
-            if True]  # simplified
+    boot = [concordance_index_censored(y_v['event'][idx], y_v['time'][idx], val_risk[idx])[0]
+            for idx in (rng.choice(len(val_risk), len(val_risk), True) for _ in range(1000))
+            if True]
     ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
 
-    print(f"  Validation C-index: {val_ci:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
+    print(f"  Validation C-index ({val_name}): {val_ci:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
 
     # ------------------------------------------------------------------
     # Baseline models: covariate-only C-indices for comparison
@@ -480,7 +500,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     full_cov_cols  = cov_col_list   # already variance-filtered, includes dummies
 
     # CIDR baseline df needs the same dummy-zeroing as the PGS validation
-    cidr_base = cidr_sub.copy()   # cidr_sub already has source_Mayo and zeroed cohort dummies
+    val_base = val_sub.copy()   # val_sub already has source_Mayo and zeroed cohort dummies
 
     baselines = {}
     for bl_label, bl_cols in [
@@ -488,7 +508,7 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
         ('clinical_pcs',    clinical_pc_cols),
         ('full_covariates', full_cov_cols),
     ]:
-        bl = fit_baseline_cox(df_sub, cidr_base, bl_cols, bl_label)
+        bl = fit_baseline_cox(df_sub, val_base, bl_cols, bl_label)
         baselines[bl_label] = bl
         tr_str = f"{bl['train_cindex']:.4f}" if bl['train_cindex'] is not None else "n/a"
         va_str = f"{bl['val_cindex']:.4f}"   if bl['val_cindex']  is not None else "n/a"
@@ -497,30 +517,31 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
     print(f"  PGS model:           train={train_ci:.4f}, val={val_ci:.4f}")
 
     # KM plot
-    n_groups = 4 if len(cidr_model) >= 80 else 3
+    n_groups = 4 if len(val_model) >= 80 else 3
     gl = 'Quartile' if n_groups == 4 else 'Tertile'
-    cidr_model = cidr_model.copy()
-    cidr_model['risk'] = cidr_risk
-    cidr_model['rg'] = pd.qcut(cidr_risk, n_groups, labels=False, duplicates='drop') + 1
+    val_model = val_model.copy()
+    val_model['risk'] = val_risk
+    val_model['rg'] = pd.qcut(val_risk, n_groups, labels=False, duplicates='drop') + 1
 
     fig, ax = plt.subplots(figsize=(10, 7))
     colors = ['#2ca02c', '#1f77b4', '#ff7f0e', '#d62728']
-    for g in sorted(cidr_model['rg'].unique()):
-        gd = cidr_model[cidr_model['rg'] == g]
+    for g in sorted(val_model['rg'].unique()):
+        gd = val_model[val_model['rg'] == g]
         kmf = KaplanMeierFitter()
         kmf.fit(gd['survdays'], gd['vstatus'], label=f'{gl} {g} (n={len(gd)})')
         kmf.plot_survival_function(ax=ax, color=colors[g-1], ci_show=True)
 
-    lr = logrank_test(cidr_model[cidr_model['rg']==cidr_model['rg'].min()]['survdays'],
-                      cidr_model[cidr_model['rg']==cidr_model['rg'].max()]['survdays'],
-                      cidr_model[cidr_model['rg']==cidr_model['rg'].min()]['vstatus'],
-                      cidr_model[cidr_model['rg']==cidr_model['rg'].max()]['vstatus'])
+    lr = logrank_test(val_model[val_model['rg']==val_model['rg'].min()]['survdays'],
+                      val_model[val_model['rg']==val_model['rg'].max()]['survdays'],
+                      val_model[val_model['rg']==val_model['rg'].min()]['vstatus'],
+                      val_model[val_model['rg']==val_model['rg'].max()]['vstatus'])
 
-    ax.set_title(f'{subtype_name}: KM ({gl}s)\nC-index={val_ci:.3f} [{ci_lo:.3f}, {ci_hi:.3f}], LR p={lr.p_value:.2e}')
+    ax.set_title(f'{subtype_name} [{val_name}]: KM ({gl}s)\n'
+                 f'C-index={val_ci:.3f} [{ci_lo:.3f}, {ci_hi:.3f}], LR p={lr.p_value:.2e}')
     ax.set_xlabel('Time (days)'); ax.set_ylabel('Survival Probability')
     ax.legend()
     plt.tight_layout()
-    fig.savefig(os.path.join(subtype_dir, 'kaplan_meier.png'), dpi=150)
+    fig.savefig(os.path.join(subtype_dir, f'kaplan_meier_{val_name}.png'), dpi=150)
     plt.close(fig)
 
     # Summary table
@@ -555,7 +576,8 @@ def process_subtype(subtype_name, criteria, discovery_pooled, cidr_df, pgs_cols,
         plt.close(fig)
 
     return {
-        'status': 'complete', 'n_discovery': len(model_df), 'n_events': n_events,
+        'status': 'complete', 'val_cohort': val_name,
+        'n_discovery': len(model_df), 'n_events': n_events,
         'n_pgs_candidates': len(final_pgs), 'n_nonzero_pgs': int(nonzero.sum()),
         'best_alpha': best_alpha, 'best_cv_cindex': float(mean_cv[selected_idx]),
         'train_cindex': float(train_ci), 'val_cindex': float(val_ci),
@@ -609,11 +631,8 @@ def main():
     args = parse_args()
 
     # Re-import all config globals that parse_args() may have mutated.
-    # parse_args() updates names in config's own namespace; without this,
-    # run_pipeline.py's module-level copies (from the 'from config import *')
-    # would remain stale at their default values.
     from config import (DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS,
-                        DEBUG, MODELS_FILE)
+                        DEBUG, MODELS_FILE, CV_STRATEGY)
 
     if args.test:
         success = run_smoke_test()
@@ -622,27 +641,39 @@ def main():
     np.random.seed(RANDOM_SEED)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Load discovery data
-    print("Loading discovery cohorts...")
-    dfs = [load_cohort_data(c, DATA_DIR) for c in DISCOVERY_COHORTS]
-    pooled = pd.concat(dfs, ignore_index=True)
+    # ------------------------------------------------------------------
+    # Load cohort data
+    # ------------------------------------------------------------------
+    if CV_STRATEGY == 'loco':
+        print(f"CV strategy: LOCO over {ALL_COHORTS}")
+        cohort_dfs = {c: load_cohort_data(c, DATA_DIR) for c in ALL_COHORTS}
+    else:
+        print(f"CV strategy: fixed  (train={DISCOVERY_COHORTS}, val={VALIDATION_COHORT})")
+        print("Loading discovery cohorts...")
+        dfs = [load_cohort_data(c, DATA_DIR) for c in DISCOVERY_COHORTS]
+        pooled = pd.concat(dfs, ignore_index=True)
+        print("Loading validation cohort...")
+        cidr = load_cohort_data(VALIDATION_COHORT, DATA_DIR)
 
-    # Load validation data
-    print("Loading validation cohort...")
-    cidr = load_cohort_data(VALIDATION_COHORT, DATA_DIR)
-
-    # Identify PGS columns
+    # ------------------------------------------------------------------
+    # Identify PGS columns (from pooled / first cohort depending on strategy)
+    # ------------------------------------------------------------------
     meta = ['IID', 'dataset', 'sample', 'cohort', 'source', 'age', 'sex',
             'case', 'grade', 'idh', 'pq', 'tert', 'rad', 'chemo', 'treated',
             'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'PC6', 'PC7', 'PC8',
             'survdays', 'vstatus', 'grade_numeric']
-    pgs_cols = [c for c in pooled.columns if c not in meta]
+
+    if CV_STRATEGY == 'loco':
+        ref_df = pd.concat(list(cohort_dfs.values()), ignore_index=True)
+    else:
+        ref_df = pooled
+
+    pgs_cols = [c for c in ref_df.columns if c not in meta]
 
     if N_MODELS is not None:
         pgs_cols = list(np.random.choice(pgs_cols, min(N_MODELS, len(pgs_cols)), replace=False))
         print(f"Subsampled to {len(pgs_cols)} PGS models")
 
-    # Apply model allowlist if provided (--models flag / MODELS_FILE config)
     if MODELS_FILE is not None:
         with open(MODELS_FILE) as fh:
             allowed = {line.strip() for line in fh if line.strip() and not line.startswith('#')}
@@ -651,33 +682,89 @@ def main():
         print(f"Model allowlist '{MODELS_FILE}': kept {len(pgs_cols)} / {before} models "
               f"({before - len(pgs_cols)} dropped)")
         if len(pgs_cols) == 0:
-            print("ERROR: No PGS models remain after applying allowlist. "
-                  "Check that model IDs in the file match column names in the score files.")
+            print("ERROR: No PGS models remain after applying allowlist.")
             sys.exit(1)
 
+    # ------------------------------------------------------------------
     # Determine which subtypes to run
+    # ------------------------------------------------------------------
     if args.subtype:
         subtypes_to_run = {args.subtype: SUBTYPES[args.subtype]}
     else:
         subtypes_to_run = SUBTYPES
 
-    # Process each subtype
+    # ------------------------------------------------------------------
+    # Run pipeline
+    # ------------------------------------------------------------------
     results = {}
-    for name, criteria in subtypes_to_run.items():
-        try:
-            results[name] = process_subtype(name, criteria, pooled, cidr, pgs_cols, OUTPUT_DIR)
-        except Exception as e:
-            print(f"ERROR in {name}: {e}")
-            traceback.print_exc()
-            results[name] = {'status': 'error', 'error': str(e)}
 
+    if CV_STRATEGY == 'loco':
+        # LOCO: for each held-out cohort, train on the rest, validate on it.
+        # Final result per subtype is the mean ± SD C-index across folds.
+        for name, criteria in subtypes_to_run.items():
+            fold_results = {}
+            for val_cohort in ALL_COHORTS:
+                train_cohorts = [c for c in ALL_COHORTS if c != val_cohort]
+                train_df = pd.concat([cohort_dfs[c] for c in train_cohorts],
+                                     ignore_index=True)
+                val_df   = cohort_dfs[val_cohort]
+                fold_label = f'{name}_val_{val_cohort}'
+                fold_out   = os.path.join(OUTPUT_DIR, 'loco_folds', val_cohort)
+                os.makedirs(fold_out, exist_ok=True)
+                try:
+                    fold_results[val_cohort] = process_subtype(
+                        name, criteria, train_df, val_df, val_cohort,
+                        pgs_cols, fold_out)
+                except Exception as e:
+                    print(f"ERROR in {name} / val={val_cohort}: {e}")
+                    traceback.print_exc()
+                    fold_results[val_cohort] = {'status': 'error', 'error': str(e)}
+
+            # Aggregate across folds
+            val_cis = [v['val_cindex'] for v in fold_results.values()
+                       if v.get('status') == 'complete' and v.get('val_cindex') is not None]
+            results[name] = {
+                'status': 'complete' if val_cis else 'all_folds_failed',
+                'cv_strategy': 'loco',
+                'folds': fold_results,
+                'mean_val_cindex': float(np.mean(val_cis))   if val_cis else None,
+                'std_val_cindex':  float(np.std(val_cis))    if val_cis else None,
+                'n_folds_complete': len(val_cis),
+            }
+            if val_cis:
+                print(f"\n  {name} LOCO summary: mean val C-index = "
+                      f"{results[name]['mean_val_cindex']:.4f} "
+                      f"± {results[name]['std_val_cindex']:.4f} "
+                      f"({len(val_cis)}/{len(ALL_COHORTS)} folds complete)")
+
+    else:
+        # Fixed: original single train/val split
+        for name, criteria in subtypes_to_run.items():
+            try:
+                results[name] = process_subtype(
+                    name, criteria, pooled, cidr, VALIDATION_COHORT,
+                    pgs_cols, OUTPUT_DIR)
+            except Exception as e:
+                print(f"ERROR in {name}: {e}")
+                traceback.print_exc()
+                results[name] = {'status': 'error', 'error': str(e)}
+
+    # ------------------------------------------------------------------
     # Save results summary
+    # ------------------------------------------------------------------
     with open(os.path.join(OUTPUT_DIR, 'results_summary.json'), 'w') as f:
         json.dump(results, f, indent=2, default=str)
 
     print("\n=== PIPELINE COMPLETE ===")
     for name, res in results.items():
-        print(f"  {name}: {res.get('status', 'unknown')}")
+        if CV_STRATEGY == 'loco':
+            mean = res.get('mean_val_cindex')
+            std  = res.get('std_val_cindex')
+            summary = (f"mean val C-index={mean:.4f} ± {std:.4f}" if mean is not None
+                       else res.get('status', 'unknown'))
+        else:
+            summary = res.get('status', 'unknown')
+        print(f"  {name}: {summary}")
 
 
 if __name__ == '__main__':
