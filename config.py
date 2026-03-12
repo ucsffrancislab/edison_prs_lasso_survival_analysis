@@ -39,16 +39,19 @@ MIN_EVENTS_PER_SUBTYPE  = 10      # Skip subtype if fewer events than this
 # Events-per-variable ratio for EPV cap: max predictors entering LASSO = floor(n_events / EPV_RATIO)
 # Raised from 5 -> 10 to halve the predictor cap and reduce overfitting risk.
 EPV_RATIO               = 10
+#EPV_RATIO               = 5
 
 # Nominal p-value threshold for pre-filtering PGS candidates via full univariate Cox.
 # The score-test screen uses META_P_THRESHOLD * 2 as a looser first pass.
 # Lowered from 0.05 -> 0.01 to admit fewer candidates into LASSO.
 META_P_THRESHOLD        = 0.01
+#META_P_THRESHOLD        = 0.05
 
 # Require the same direction of effect in at least this many discovery cohorts
 # before a PGS is admitted to LASSO.  Set to len(DISCOVERY_COHORTS) (i.e. 3)
 # to require unanimity across all cohorts; set to 2 for the original behaviour.
 MIN_COHORTS_FOR_DIRECTION = 3
+#MIN_COHORTS_FOR_DIRECTION = 2
 
 # Hard cap on the number of PGS candidates entering LASSO, applied after the
 # EPV cap.  Acts as a secondary safety net independent of event count.
