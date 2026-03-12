@@ -86,7 +86,12 @@ def subset_by_subtype(df, subtype_name, criteria):
 
 
 def check_covariate_variance(df, covariates, label=""):
-    """Check and filter covariates with zero/near-zero variance."""
+    """Check and filter covariates with zero/near-zero variance.
+
+    Uses pd.api.types.is_numeric_dtype() rather than dtype == 'object' so that
+    Arrow-backed string columns (pandas >= 2.0 with pyarrow backend) are handled
+    correctly alongside legacy object-dtype strings.
+    """
     surviving = []
     for cov in covariates:
         col = 'grade_numeric' if cov == 'grade' else cov
@@ -95,13 +100,14 @@ def check_covariate_variance(df, covariates, label=""):
         vals = df[col].dropna()
         if len(vals) == 0:
             continue
-        if vals.dtype == 'object':
-            if vals.nunique() <= 1:
-                dprint(f"  Dropping {cov} ({label}): single value")
-                continue
-        else:
+        if pd.api.types.is_numeric_dtype(vals):
             if vals.var() < 1e-10:
                 dprint(f"  Dropping {cov} ({label}): near-zero variance")
+                continue
+        else:
+            # Categorical / string column — check cardinality only
+            if vals.nunique() <= 1:
+                dprint(f"  Dropping {cov} ({label}): single value")
                 continue
         if df[col].isna().sum() / len(df) > 0.5:
             dprint(f"  Dropping {cov} ({label}): >50% missing")
