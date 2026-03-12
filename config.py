@@ -54,6 +54,7 @@ MIN_COHORTS_FOR_DIRECTION = 3
 # EPV cap.  Acts as a secondary safety net independent of event count.
 # Set to None to disable.
 #MAX_CANDIDATES_PREFILT  = 500
+MAX_CANDIDATES_PREFILT  = None
 
 # Alpha-selection rule for the LASSO CV path.
 #   'best' : alpha that maximises mean CV C-index  (original behaviour)
