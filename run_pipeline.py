@@ -246,6 +246,9 @@ def _cv_fold_one(fi, tri, vai, X, y, penalty_factor, alpha_path):
     except Exception:
         pass
     return fi, scores
+
+
+def _check_direction_one(pgs, df_sub, active_cohorts, per_cohort_cov):
     """Check direction consistency for a single PGS across active cohorts.
     Returns pgs name if consistent, None otherwise. Used by process_subtype."""
     signs = {}
