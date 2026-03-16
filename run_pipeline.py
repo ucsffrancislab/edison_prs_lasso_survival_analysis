@@ -26,6 +26,7 @@ from lifelines.statistics import logrank_test
 from sksurv.linear_model import CoxnetSurvivalAnalysis
 from sksurv.metrics import concordance_index_censored
 from sklearn.model_selection import KFold
+from joblib import Parallel, delayed
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -162,26 +163,32 @@ def compute_score_tests(df, pgs_cols, cov_cols):
     return pd.DataFrame({'pgs': available_pgs, 'score_p': p_score, 'direction': direction})
 
 
+def _fit_one_cox(df, pgs, cov_cols):
+    """Fit a single univariate Cox PH model. Used by fit_full_cox_batch."""
+    try:
+        cols = [pgs] + cov_cols + ['survdays', 'vstatus']
+        sub = df[cols].dropna()
+        if len(sub) < 10 or sub['vstatus'].sum() < 5 or sub[pgs].var() < 1e-10:
+            return None
+        cph = CoxPHFitter()
+        cph.fit(sub, duration_col='survdays', event_col='vstatus', show_progress=False)
+        s = cph.summary.loc[pgs]
+        return {
+            'pgs': pgs, 'coef': s['coef'], 'hr': s['exp(coef)'],
+            'se': s['se(coef)'], 'z': s['z'], 'p': s['p'],
+            'ci_lower': s['exp(coef) lower 95%'], 'ci_upper': s['exp(coef) upper 95%'],
+            'n': len(sub), 'events': int(sub['vstatus'].sum()),
+        }
+    except Exception:
+        return None
+
+
 def fit_full_cox_batch(df, pgs_list, cov_cols):
-    """Fit full univariate Cox PH for a list of PGS models."""
-    results = []
-    for pgs in pgs_list:
-        try:
-            cols = [pgs] + cov_cols + ['survdays', 'vstatus']
-            sub = df[cols].dropna()
-            if len(sub) < 10 or sub['vstatus'].sum() < 5 or sub[pgs].var() < 1e-10:
-                continue
-            cph = CoxPHFitter()
-            cph.fit(sub, duration_col='survdays', event_col='vstatus', show_progress=False)
-            s = cph.summary.loc[pgs]
-            results.append({
-                'pgs': pgs, 'coef': s['coef'], 'hr': s['exp(coef)'],
-                'se': s['se(coef)'], 'z': s['z'], 'p': s['p'],
-                'ci_lower': s['exp(coef) lower 95%'], 'ci_upper': s['exp(coef) upper 95%'],
-                'n': len(sub), 'events': int(sub['vstatus'].sum()),
-            })
-        except Exception:
-            pass
+    """Fit full univariate Cox PH for a list of PGS models (parallel)."""
+    results = Parallel(n_jobs=N_JOBS, prefer='threads')(
+        delayed(_fit_one_cox)(df, pgs, cov_cols) for pgs in pgs_list
+    )
+    results = [r for r in results if r is not None]
     return pd.DataFrame(results)
 
 
@@ -219,6 +226,45 @@ def fit_baseline_cox(train_df, val_df, cov_cols, label):
     except Exception as e:
         dprint(f"  Baseline Cox failed for '{label}': {e}")
     return result
+
+
+def _cv_fold_one(fi, tri, vai, X, y, penalty_factor, alpha_path):
+    """Fit CoxNet on one CV fold and return (fold_idx, scores array).
+    Used by process_subtype to parallelize the CV loop."""
+    scores = np.full(len(alpha_path), np.nan)
+    try:
+        cv_m = CoxnetSurvivalAnalysis(l1_ratio=1.0, penalty_factor=penalty_factor,
+                                       alphas=alpha_path, fit_baseline_model=True)
+        cv_m.fit(X[tri], y[tri])
+        for ai in range(len(alpha_path)):
+            risk = X[vai] @ cv_m.coef_[:, ai]
+            try:
+                scores[ai] = concordance_index_censored(
+                    y[vai]['event'], y[vai]['time'], risk)[0]
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return fi, scores
+    """Check direction consistency for a single PGS across active cohorts.
+    Returns pgs name if consistent, None otherwise. Used by process_subtype."""
+    signs = {}
+    for cohort in active_cohorts:
+        try:
+            cdf = df_sub[df_sub['cohort'] == cohort]
+            cv  = [c for c in per_cohort_cov[cohort] if cdf[c].var() > 1e-10]
+            cols = [pgs] + cv + ['survdays', 'vstatus']
+            sub = cdf[cols].dropna()
+            if len(sub) < 10 or sub['vstatus'].sum() < 5 or sub[pgs].var() < 1e-10:
+                continue
+            cph = CoxPHFitter()
+            cph.fit(sub, duration_col='survdays', event_col='vstatus', show_progress=False)
+            signs[cohort] = np.sign(cph.summary.loc[pgs, 'coef'])
+        except Exception:
+            continue
+    if len(signs) >= MIN_COHORTS_FOR_DIRECTION and len(set(signs.values())) == 1:
+        return pgs
+    return None
 
 
 def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
@@ -322,26 +368,13 @@ def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
             per_cohort_cov[cohort] = valid
 
         active_cohorts = [c for c, v in per_cohort_cov.items() if v is not None]
-        consistent = []
 
-        for _, row in sig_pooled.iterrows():
-            pgs = row['pgs']
-            signs = {}
-            for cohort in active_cohorts:
-                try:
-                    cdf = df_sub[df_sub['cohort'] == cohort]
-                    cv = [c for c in per_cohort_cov[cohort] if cdf[c].var() > 1e-10]
-                    cols = [pgs] + cv + ['survdays', 'vstatus']
-                    sub = cdf[cols].dropna()
-                    if len(sub) < 10 or sub['vstatus'].sum() < 5 or sub[pgs].var() < 1e-10:
-                        continue
-                    cph = CoxPHFitter()
-                    cph.fit(sub, duration_col='survdays', event_col='vstatus', show_progress=False)
-                    signs[cohort] = np.sign(cph.summary.loc[pgs, 'coef'])
-                except:
-                    continue
-            if len(signs) >= MIN_COHORTS_FOR_DIRECTION and len(set(signs.values())) == 1:
-                consistent.append(pgs)
+        dir_results = Parallel(n_jobs=N_JOBS, prefer='threads')(
+            delayed(_check_direction_one)(
+                row['pgs'], df_sub, active_cohorts, per_cohort_cov)
+            for _, row in sig_pooled.iterrows()
+        )
+        consistent = [pgs for pgs in dir_results if pgs is not None]
 
         print(f"  Consistent direction: {len(consistent)} / {len(sig_pooled)}")
         filtered_pgs = consistent
@@ -384,23 +417,16 @@ def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
     coxnet.fit(X, y)
     alpha_path = coxnet.alphas_
 
-    # CV
+    # CV — parallel over folds
     kf = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_SEED)
     cv_scores = np.full((CV_FOLDS, len(alpha_path)), np.nan)
 
-    for fi, (tri, vai) in enumerate(kf.split(X)):
-        try:
-            cv_m = CoxnetSurvivalAnalysis(l1_ratio=1.0, penalty_factor=penalty_factor,
-                                           alphas=alpha_path, fit_baseline_model=True)
-            cv_m.fit(X[tri], y[tri])
-            for ai in range(len(alpha_path)):
-                risk = X[vai] @ cv_m.coef_[:, ai]
-                try:
-                    cv_scores[fi, ai] = concordance_index_censored(y[vai]['event'], y[vai]['time'], risk)[0]
-                except:
-                    pass
-        except:
-            pass
+    fold_results_cv = Parallel(n_jobs=min(N_JOBS, CV_FOLDS), prefer='threads')(
+        delayed(_cv_fold_one)(fi, tri, vai, X, y, penalty_factor, alpha_path)
+        for fi, (tri, vai) in enumerate(kf.split(X))
+    )
+    for fi, scores in fold_results_cv:
+        cv_scores[fi] = scores
 
     mean_cv = np.nanmean(cv_scores, axis=0)
     std_cv = np.nanstd(cv_scores, axis=0)
