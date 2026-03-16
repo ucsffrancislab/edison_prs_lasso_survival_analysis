@@ -771,7 +771,7 @@ def main():
 
             for i, seed in enumerate(split_seeds):
                 split_rng = np.random.RandomState(seed)
-                idx = subtype_data.index.to_numpy()
+                idx = subtype_data.index.to_numpy().copy()
                 split_rng.shuffle(idx)
                 n_train = int(np.floor(n_total * TRAIN_FRACTION))
                 train_idx = idx[:n_train]
