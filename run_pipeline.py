@@ -1156,6 +1156,28 @@ def main():
             summary = res.get('status', 'unknown')
         print(f"  {name}: {summary}")
 
+    # ------------------------------------------------------------------
+    # HTML report
+    # ------------------------------------------------------------------
+    if not args.no_report:
+        try:
+            from generate_report import build_html
+            if CV_STRATEGY == 'random_split' and N_SPLITS and TRAIN_FRACTION:
+                strat_info = f'Random Split  N={N_SPLITS}, train={TRAIN_FRACTION:.0%}'
+            elif CV_STRATEGY == 'loco':
+                strat_info = 'Leave-One-Cohort-Out (LOCO)'
+            else:
+                strat_info = CV_STRATEGY
+            html = build_html(OUTPUT_DIR, results, CV_STRATEGY,
+                              {'strategy_info': strat_info})
+            report_path = os.path.join(OUTPUT_DIR, 'report.html')
+            with open(report_path, 'w') as f:
+                f.write(html)
+            print(f"\nHTML report: {report_path}")
+        except Exception as e:
+            print(f"\nWARNING: HTML report generation failed: {e}")
+            traceback.print_exc()
+
 
 if __name__ == '__main__':
     main()

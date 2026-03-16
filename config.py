@@ -143,6 +143,8 @@ def parse_args():
     parser.add_argument('--train-fraction', type=float, default=TRAIN_FRACTION,
                         help='Fraction of samples used for training in each random split '
                              '(default: %(default)s)')
+    parser.add_argument('--no-report', action='store_true', default=False,
+                        help='Skip HTML report generation after pipeline completes')
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable verbose debug output')
     parser.add_argument('--test', action='store_true', default=False,
