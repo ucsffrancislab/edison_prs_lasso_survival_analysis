@@ -83,6 +83,11 @@ MAX_CANDIDATES_PREFILT  = 500
 #            sparser models and is generally preferred to reduce overfitting.
 LASSO_ALPHA_RULE        = '1se'
 
+# Minimum fraction of folds/splits a PGS must be selected in to appear in
+# the post-run consistency summary (applies to both loco and random_split).
+# Default 0.25 = selected in >= 25% of runs.  Set to 0.0 to report all.
+MIN_REPORT_FRACTION = 0.25
+
 # Require consistent direction of effect across cohorts (uses MIN_COHORTS_FOR_DIRECTION above)
 REQUIRE_CONSISTENT_DIR  = True
 

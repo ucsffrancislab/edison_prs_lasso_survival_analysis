@@ -597,6 +597,276 @@ def process_subtype(subtype_name, criteria, discovery_pooled, val_df, val_name,
     }
 
 
+def _build_pgs_table(all_rows, run_labels):
+    """
+    Shared helper: given a list of dicts (one per selected PGS per run),
+    build a consistency DataFrame with per-run LASSO coef columns,
+    fold/split counts, mean univar stats, and sign consistency flag.
+
+    Parameters
+    ----------
+    all_rows   : list of dict, each with keys:
+                   run_label, subtype, PGS_ID, LASSO_coef, LASSO_HR,
+                   and optionally univar_p, univar_HR, univar_CI_lo, univar_CI_hi
+    run_labels : ordered list of all run labels (folds or split IDs)
+
+    Returns
+    -------
+    consistency : DataFrame, one row per (subtype, PGS_ID), sorted by
+                  subtype then descending run_count then ascending mean_univar_p
+    presence    : DataFrame, binary matrix (index=PGS_ID, cols=run_labels + ['run_count','subtype'])
+    """
+    if not all_rows:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    subtypes = sorted(df['subtype'].unique())
+    cons_parts = []
+    pres_parts = []
+
+    for subtype in subtypes:
+        sub = df[df['subtype'] == subtype]
+        pgs_ids = sorted(sub['PGS_ID'].unique())
+
+        presence = pd.DataFrame(0, index=pgs_ids, columns=run_labels)
+        for _, row in sub.iterrows():
+            presence.loc[row['PGS_ID'], row['run_label']] = 1
+        presence['run_count'] = presence[run_labels].sum(axis=1)
+        presence['subtype']   = subtype
+        pres_parts.append(presence.reset_index().rename(columns={'index': 'PGS_ID'}))
+
+        rows = []
+        for pgs in pgs_ids:
+            pgs_rows = sub[sub['PGS_ID'] == pgs]
+            run_count = len(pgs_rows)
+            row = {
+                'subtype':          subtype,
+                'PGS_ID':           pgs,
+                'run_count':        run_count,
+                'n_runs_total':     len(run_labels),
+                'select_fraction':  run_count / len(run_labels),
+                'runs':             ','.join(sorted(pgs_rows['run_label'].tolist())),
+                'mean_LASSO_coef':  pgs_rows['LASSO_coef'].mean(),
+                'mean_LASSO_HR':    pgs_rows['LASSO_HR'].mean(),
+                'sign_consistent':  int(pgs_rows['LASSO_coef'].apply(np.sign).nunique() == 1),
+            }
+            for rl in run_labels:
+                rr = pgs_rows[pgs_rows['run_label'] == rl]
+                row[f'coef_{rl}'] = rr['LASSO_coef'].iloc[0] if len(rr) else np.nan
+
+            for col, out in [('univar_p',     'mean_univar_p'),
+                              ('univar_HR',    'mean_univar_HR'),
+                              ('univar_CI_lo', 'mean_univar_CI_lo'),
+                              ('univar_CI_hi', 'mean_univar_CI_hi')]:
+                if col in pgs_rows.columns:
+                    row[out] = pgs_rows[col].mean()
+
+            rows.append(row)
+
+        cons = pd.DataFrame(rows).sort_values(
+            ['run_count', 'mean_univar_p'] if 'mean_univar_p' in pd.DataFrame(rows).columns
+            else ['run_count'],
+            ascending=[False, True] if 'mean_univar_p' in pd.DataFrame(rows).columns
+            else [False])
+        cons_parts.append(cons)
+
+    consistency = pd.concat(cons_parts, ignore_index=True) if cons_parts else pd.DataFrame()
+    presence    = pd.concat(pres_parts, ignore_index=True) if pres_parts else pd.DataFrame()
+    return consistency, presence
+
+
+def _print_pgs_summary(consistency, min_fraction, n_runs_total, strategy_label):
+    """Print a human-readable PGS consistency summary to stdout."""
+    min_count = max(1, int(np.ceil(min_fraction * n_runs_total)))
+    subtypes  = consistency['subtype'].unique() if not consistency.empty else []
+
+    print(f"\n{'='*60}")
+    print(f"PGS CONSISTENCY SUMMARY  [{strategy_label}]")
+    print(f"  Reporting threshold : >= {min_fraction:.0%} of runs "
+          f"(>= {min_count}/{n_runs_total})")
+    print(f"{'='*60}")
+
+    coef_cols = [c for c in consistency.columns if c.startswith('coef_')]
+
+    for subtype in subtypes:
+        sub = consistency[
+            (consistency['subtype'] == subtype) &
+            (consistency['run_count'] >= min_count)
+        ]
+        print(f"\n  Subtype: {subtype}")
+        print(f"  PGS selected in >= {min_count}/{n_runs_total} runs: {len(sub)}")
+
+        if sub.empty:
+            print("    (none)")
+            continue
+
+        for _, row in sub.iterrows():
+            frac_str = f"{int(row['run_count'])}/{n_runs_total} " \
+                       f"({row['select_fraction']:.0%})"
+            sign_str = "yes" if row['sign_consistent'] else "NO — mixed signs"
+            print(f"\n    {row['PGS_ID']}")
+            print(f"      Selected in    : {frac_str}  runs={row['runs']}")
+            print(f"      Sign consistent: {sign_str}")
+            print(f"      Mean LASSO HR  : {row['mean_LASSO_HR']:.4f}  "
+                  f"(coef={row['mean_LASSO_coef']:.4f})")
+            for cc in coef_cols:
+                run_name = cc[len('coef_'):]
+                val = row[cc]
+                print(f"        {run_name:12s}: "
+                      f"{'—' if np.isnan(val) else f'{val:.4f}'}")
+            if 'mean_univar_p' in row and pd.notna(row.get('mean_univar_p')):
+                print(f"      Mean univar p  : {row['mean_univar_p']:.4e}")
+                print(f"      Mean univar HR : {row['mean_univar_HR']:.4f} "
+                      f"[{row['mean_univar_CI_lo']:.4f}, "
+                      f"{row['mean_univar_CI_hi']:.4f}]")
+
+
+def summarize_loco_results(results, output_dir, min_fraction=0.25):
+    """
+    Build and save PGS consistency tables for a completed LOCO run.
+    Reads per-fold summary_table.csv files from output_dir/loco_folds/.
+    Called automatically at the end of a loco pipeline run.
+
+    Parameters
+    ----------
+    results      : pipeline results dict (from main loop)
+    output_dir   : pipeline OUTPUT_DIR
+    min_fraction : fraction threshold for console reporting
+    """
+    print(f"\n{'='*60}")
+    print("POST-RUN: LOCO PGS CONSISTENCY ANALYSIS")
+    print(f"{'='*60}")
+
+    loco_dir  = os.path.join(output_dir, 'loco_folds')
+    all_rows  = []
+    run_labels = []
+
+    for cohort in sorted(os.listdir(loco_dir)):
+        cohort_dir = os.path.join(loco_dir, cohort)
+        if not os.path.isdir(cohort_dir):
+            continue
+        run_labels.append(cohort)
+        for subtype in sorted(os.listdir(cohort_dir)):
+            csv_path = os.path.join(cohort_dir, subtype, 'summary_table.csv')
+            if not os.path.isfile(csv_path):
+                continue
+            try:
+                df = pd.read_csv(csv_path)
+                if df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    entry = {
+                        'run_label': cohort,
+                        'subtype':   subtype,
+                        'PGS_ID':    row['PGS_ID'],
+                        'LASSO_coef': row['LASSO_coef'],
+                        'LASSO_HR':   row['LASSO_HR'],
+                    }
+                    for col in ('univar_p', 'univar_HR', 'univar_CI_lo', 'univar_CI_hi'):
+                        if col in df.columns:
+                            entry[col] = row[col]
+                    all_rows.append(entry)
+            except Exception as e:
+                print(f"  WARNING: could not read {csv_path}: {e}")
+
+    if not all_rows:
+        print("  No summary tables found — skipping consistency analysis.")
+        return
+
+    n_runs = len(run_labels)
+    print(f"  Folds found: {run_labels}  (n={n_runs})")
+
+    consistency, presence = _build_pgs_table(all_rows, run_labels)
+
+    out_dir   = loco_dir
+    cons_path = os.path.join(out_dir, 'pgs_consistency.csv')
+    pres_path = os.path.join(out_dir, 'pgs_presence_matrix.csv')
+    consistency.to_csv(cons_path, index=False)
+    presence.to_csv(pres_path,    index=False)
+    print(f"  Saved: {cons_path}")
+    print(f"  Saved: {pres_path}")
+
+    _print_pgs_summary(consistency, min_fraction, n_runs, 'LOCO')
+
+
+def summarize_random_split_results(results, output_dir, n_splits, min_fraction=0.25):
+    """
+    Build and save PGS consistency tables for a completed random_split run.
+    Reads per-split summary_table.csv files from output_dir/random_splits/.
+    Called automatically at the end of a random_split pipeline run.
+
+    Parameters
+    ----------
+    results      : pipeline results dict (from main loop)
+    output_dir   : pipeline OUTPUT_DIR
+    n_splits     : total number of splits attempted (for denominator)
+    min_fraction : fraction threshold for console reporting
+    """
+    print(f"\n{'='*60}")
+    print("POST-RUN: RANDOM SPLIT PGS CONSISTENCY ANALYSIS")
+    print(f"{'='*60}")
+
+    splits_dir = os.path.join(output_dir, 'random_splits')
+    all_rows   = []
+    run_labels = []
+
+    for split in sorted(os.listdir(splits_dir)):
+        split_dir = os.path.join(splits_dir, split)
+        if not os.path.isdir(split_dir):
+            continue
+        # Collect run labels from subtype subdirs
+        has_tables = False
+        for subtype in sorted(os.listdir(split_dir)):
+            csv_path = os.path.join(split_dir, subtype, 'summary_table.csv')
+            if not os.path.isfile(csv_path):
+                continue
+            has_tables = True
+            try:
+                df = pd.read_csv(csv_path)
+                if df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    entry = {
+                        'run_label':  split,
+                        'subtype':    subtype,
+                        'PGS_ID':     row['PGS_ID'],
+                        'LASSO_coef': row['LASSO_coef'],
+                        'LASSO_HR':   row['LASSO_HR'],
+                    }
+                    for col in ('univar_p', 'univar_HR', 'univar_CI_lo', 'univar_CI_hi'):
+                        if col in df.columns:
+                            entry[col] = row[col]
+                    all_rows.append(entry)
+            except Exception as e:
+                print(f"  WARNING: could not read {csv_path}: {e}")
+        if has_tables:
+            run_labels.append(split)
+
+    # Use n_splits as the denominator even if some splits produced no output
+    # (failed splits should still count against the selection fraction)
+    all_split_labels = [f'split_{i+1:02d}' for i in range(n_splits)]
+
+    if not all_rows:
+        print("  No summary tables found — skipping consistency analysis.")
+        return
+
+    n_runs = n_splits
+    print(f"  Splits with output : {len(run_labels)}/{n_runs}")
+
+    consistency, presence = _build_pgs_table(all_rows, all_split_labels)
+
+    out_dir   = splits_dir
+    cons_path = os.path.join(out_dir, 'pgs_consistency.csv')
+    pres_path = os.path.join(out_dir, 'pgs_presence_matrix.csv')
+    consistency.to_csv(cons_path, index=False)
+    presence.to_csv(pres_path,    index=False)
+    print(f"  Saved: {cons_path}")
+    print(f"  Saved: {pres_path}")
+
+    _print_pgs_summary(consistency, min_fraction, n_runs,
+                       f'random_split  N={n_runs}, train={TRAIN_FRACTION:.0%}')
+
+
 def run_smoke_test():
     """Run a quick smoke test with subsampled data."""
     print("=== SMOKE TEST ===")
@@ -637,7 +907,8 @@ def main():
 
     # Re-import all config globals that parse_args() may have mutated.
     from config import (DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS,
-                        DEBUG, MODELS_FILE, CV_STRATEGY, N_SPLITS, TRAIN_FRACTION)
+                        DEBUG, MODELS_FILE, CV_STRATEGY, N_SPLITS, TRAIN_FRACTION,
+                        MIN_REPORT_FRACTION)
 
     if args.test:
         success = run_smoke_test()
@@ -828,6 +1099,16 @@ def main():
                 print(f"ERROR in {name}: {e}")
                 traceback.print_exc()
                 results[name] = {'status': 'error', 'error': str(e)}
+
+    # ------------------------------------------------------------------
+    # Post-run PGS consistency summary
+    # ------------------------------------------------------------------
+    if CV_STRATEGY == 'loco':
+        summarize_loco_results(results, OUTPUT_DIR,
+                               min_fraction=MIN_REPORT_FRACTION)
+    elif CV_STRATEGY == 'random_split':
+        summarize_random_split_results(results, OUTPUT_DIR, N_SPLITS,
+                                       min_fraction=MIN_REPORT_FRACTION)
 
     # ------------------------------------------------------------------
     # Save results summary
