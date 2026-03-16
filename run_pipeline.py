@@ -637,7 +637,7 @@ def main():
 
     # Re-import all config globals that parse_args() may have mutated.
     from config import (DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS,
-                        DEBUG, MODELS_FILE, CV_STRATEGY)
+                        DEBUG, MODELS_FILE, CV_STRATEGY, N_SPLITS, TRAIN_FRACTION)
 
     if args.test:
         success = run_smoke_test()
@@ -649,8 +649,10 @@ def main():
     # ------------------------------------------------------------------
     # Load cohort data
     # ------------------------------------------------------------------
-    if CV_STRATEGY == 'loco':
-        print(f"CV strategy: LOCO over {ALL_COHORTS}")
+    if CV_STRATEGY in ('loco', 'random_split'):
+        label = 'LOCO' if CV_STRATEGY == 'loco' else \
+                f'random_split (N={N_SPLITS}, train={TRAIN_FRACTION:.0%})'
+        print(f"CV strategy: {label} over {ALL_COHORTS}")
         cohort_dfs = {c: load_cohort_data(c, DATA_DIR) for c in ALL_COHORTS}
     else:
         print(f"CV strategy: fixed  (train={DISCOVERY_COHORTS}, val={VALIDATION_COHORT})")
@@ -661,14 +663,14 @@ def main():
         cidr = load_cohort_data(VALIDATION_COHORT, DATA_DIR)
 
     # ------------------------------------------------------------------
-    # Identify PGS columns (from pooled / first cohort depending on strategy)
+    # Identify PGS columns
     # ------------------------------------------------------------------
     meta = ['IID', 'dataset', 'sample', 'cohort', 'source', 'age', 'sex',
             'case', 'grade', 'idh', 'pq', 'tert', 'rad', 'chemo', 'treated',
             'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'PC6', 'PC7', 'PC8',
             'survdays', 'vstatus', 'grade_numeric']
 
-    if CV_STRATEGY == 'loco':
+    if CV_STRATEGY in ('loco', 'random_split'):
         ref_df = pd.concat(list(cohort_dfs.values()), ignore_index=True)
     else:
         ref_df = pooled
@@ -705,7 +707,6 @@ def main():
 
     if CV_STRATEGY == 'loco':
         # LOCO: for each held-out cohort, train on the rest, validate on it.
-        # Final result per subtype is the mean ± SD C-index across folds.
         for name, criteria in subtypes_to_run.items():
             fold_results = {}
             for val_cohort in ALL_COHORTS:
@@ -713,8 +714,7 @@ def main():
                 train_df = pd.concat([cohort_dfs[c] for c in train_cohorts],
                                      ignore_index=True)
                 val_df   = cohort_dfs[val_cohort]
-                fold_label = f'{name}_val_{val_cohort}'
-                fold_out   = os.path.join(OUTPUT_DIR, 'loco_folds', val_cohort)
+                fold_out = os.path.join(OUTPUT_DIR, 'loco_folds', val_cohort)
                 os.makedirs(fold_out, exist_ok=True)
                 try:
                     fold_results[val_cohort] = process_subtype(
@@ -725,15 +725,14 @@ def main():
                     traceback.print_exc()
                     fold_results[val_cohort] = {'status': 'error', 'error': str(e)}
 
-            # Aggregate across folds
             val_cis = [v['val_cindex'] for v in fold_results.values()
                        if v.get('status') == 'complete' and v.get('val_cindex') is not None]
             results[name] = {
                 'status': 'complete' if val_cis else 'all_folds_failed',
                 'cv_strategy': 'loco',
                 'folds': fold_results,
-                'mean_val_cindex': float(np.mean(val_cis))   if val_cis else None,
-                'std_val_cindex':  float(np.std(val_cis))    if val_cis else None,
+                'mean_val_cindex': float(np.mean(val_cis)) if val_cis else None,
+                'std_val_cindex':  float(np.std(val_cis))  if val_cis else None,
                 'n_folds_complete': len(val_cis),
             }
             if val_cis:
@@ -741,6 +740,82 @@ def main():
                       f"{results[name]['mean_val_cindex']:.4f} "
                       f"± {results[name]['std_val_cindex']:.4f} "
                       f"({len(val_cis)}/{len(ALL_COHORTS)} folds complete)")
+
+    elif CV_STRATEGY == 'random_split':
+        # Random split: pool all cohorts, perform N_SPLITS independent
+        # stratified random splits, average results.
+        all_data = pd.concat(list(cohort_dfs.values()), ignore_index=True)
+        split_out = os.path.join(OUTPUT_DIR, 'random_splits')
+        os.makedirs(split_out, exist_ok=True)
+
+        # Use a seeded RNG so splits are reproducible but distinct
+        rng = np.random.RandomState(RANDOM_SEED)
+        split_seeds = rng.randint(0, 2**31, size=N_SPLITS).tolist()
+
+        for name, criteria in subtypes_to_run.items():
+            print(f"\n{'='*60}")
+            print(f"SUBTYPE: {name}  [random_split: {N_SPLITS} splits, "
+                  f"train={TRAIN_FRACTION:.0%}]")
+            print(f"{'='*60}")
+
+            # Subset to this subtype first so split proportions apply to
+            # the relevant population, not the full pooled dataset
+            subtype_data = subset_by_subtype(all_data, name, criteria)
+            if subtype_data is None:
+                results[name] = {'status': 'insufficient_samples',
+                                 'cv_strategy': 'random_split'}
+                continue
+
+            n_total = len(subtype_data)
+            split_results = {}
+
+            for i, seed in enumerate(split_seeds):
+                split_rng = np.random.RandomState(seed)
+                idx = subtype_data.index.to_numpy()
+                split_rng.shuffle(idx)
+                n_train = int(np.floor(n_total * TRAIN_FRACTION))
+                train_idx = idx[:n_train]
+                val_idx   = idx[n_train:]
+
+                train_df = all_data.loc[train_idx]
+                val_df   = all_data.loc[val_idx]
+
+                # Use all cohorts present in the training split for direction check
+                train_cohorts_present = list(train_df['cohort'].unique())
+
+                split_label = f'split_{i+1:02d}'
+                fold_out    = os.path.join(split_out, split_label)
+                os.makedirs(fold_out, exist_ok=True)
+
+                print(f"\n--- Split {i+1}/{N_SPLITS} "
+                      f"(train n={len(train_df)}, val n={len(val_df)}) ---")
+                try:
+                    split_results[split_label] = process_subtype(
+                        name, criteria, train_df, val_df, split_label,
+                        pgs_cols, fold_out,
+                        train_cohorts=train_cohorts_present)
+                except Exception as e:
+                    print(f"ERROR in {name} / {split_label}: {e}")
+                    traceback.print_exc()
+                    split_results[split_label] = {'status': 'error', 'error': str(e)}
+
+            val_cis = [v['val_cindex'] for v in split_results.values()
+                       if v.get('status') == 'complete' and v.get('val_cindex') is not None]
+            results[name] = {
+                'status': 'complete' if val_cis else 'all_splits_failed',
+                'cv_strategy': 'random_split',
+                'n_splits': N_SPLITS,
+                'train_fraction': TRAIN_FRACTION,
+                'splits': split_results,
+                'mean_val_cindex': float(np.mean(val_cis)) if val_cis else None,
+                'std_val_cindex':  float(np.std(val_cis))  if val_cis else None,
+                'n_splits_complete': len(val_cis),
+            }
+            if val_cis:
+                print(f"\n  {name} random_split summary: "
+                      f"mean val C-index = {results[name]['mean_val_cindex']:.4f} "
+                      f"± {results[name]['std_val_cindex']:.4f} "
+                      f"({len(val_cis)}/{N_SPLITS} splits complete)")
 
     else:
         # Fixed: original single train/val split
@@ -762,7 +837,7 @@ def main():
 
     print("\n=== PIPELINE COMPLETE ===")
     for name, res in results.items():
-        if CV_STRATEGY == 'loco':
+        if CV_STRATEGY in ('loco', 'random_split'):
             mean = res.get('mean_val_cindex')
             std  = res.get('std_val_cindex')
             summary = (f"mean val C-index={mean:.4f} ± {std:.4f}" if mean is not None

@@ -15,15 +15,23 @@ VALIDATION_COHORT = 'cidr'
 # ---------------------------------------------------------------------------
 # Validation strategy
 # ---------------------------------------------------------------------------
-# 'fixed' : original behaviour — train on DISCOVERY_COHORTS, validate on
-#           VALIDATION_COHORT.
-# 'loco'  : Leave-One-Cohort-Out — all cohorts are pooled, then each is held
-#           out in turn as the validation set while the remaining cohorts are
-#           used for training.  Per-fold results are averaged to give a final
-#           mean ± SD C-index.  VALIDATION_COHORT and DISCOVERY_COHORTS are
-#           ignored when CV_STRATEGY = 'loco'; ALL_COHORTS is used instead.
-CV_STRATEGY   = 'loco'
-ALL_COHORTS   = ['i370', 'onco', 'tcga', 'cidr']  # used only by loco
+# 'fixed'        : original behaviour — train on DISCOVERY_COHORTS, validate
+#                  on VALIDATION_COHORT.
+# 'loco'         : Leave-One-Cohort-Out — all cohorts are pooled, then each
+#                  is held out in turn as the validation set while the
+#                  remaining cohorts train.  Per-fold results are averaged
+#                  to give a final mean ± SD C-index.  VALIDATION_COHORT and
+#                  DISCOVERY_COHORTS are ignored; ALL_COHORTS is used instead.
+# 'random_split' : all cohorts are pooled, then N_SPLITS independent random
+#                  train/test splits (TRAIN_FRACTION / 1-TRAIN_FRACTION) are
+#                  performed.  Results are averaged over splits to give a
+#                  mean ± SD C-index.
+CV_STRATEGY     = 'random_split'
+ALL_COHORTS     = ['i370', 'onco', 'tcga', 'cidr']  # used by loco and random_split
+
+# Random-split parameters (used only when CV_STRATEGY = 'random_split')
+N_SPLITS        = 20     # number of independent random splits
+TRAIN_FRACTION  = 0.70   # fraction of samples used for training
 
 # Covariates used in all Cox PH models
 # 'source' distinguishes two recruitment sources within the onco cohort only;
@@ -105,7 +113,8 @@ MODELS_FILE = None
 
 def parse_args():
     """Parse command-line arguments and update config accordingly."""
-    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG, MODELS_FILE, CV_STRATEGY
+    global DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS, DEBUG, MODELS_FILE, \
+           CV_STRATEGY, N_SPLITS, TRAIN_FRACTION
     parser = argparse.ArgumentParser(description='PRS LASSO Cox Survival Analysis Pipeline')
     parser.add_argument('--data-dir', type=str, default=DATA_DIR,
                         help='Directory containing input data files')
@@ -119,9 +128,16 @@ def parse_args():
     parser.add_argument('--n-jobs', type=int, default=N_JOBS,
                         help='Number of parallel jobs')
     parser.add_argument('--cv-strategy', type=str, default=CV_STRATEGY,
-                        choices=['fixed', 'loco'],
-                        help="Validation strategy: 'fixed' (original) or 'loco' "
-                             "(Leave-One-Cohort-Out)")
+                        choices=['fixed', 'loco', 'random_split'],
+                        help="Validation strategy: 'fixed' (original), 'loco' "
+                             "(Leave-One-Cohort-Out), or 'random_split' "
+                             "(N random train/test splits)")
+    parser.add_argument('--n-splits', type=int, default=N_SPLITS,
+                        help='Number of random splits (random_split strategy only, '
+                             'default: %(default)s)')
+    parser.add_argument('--train-fraction', type=float, default=TRAIN_FRACTION,
+                        help='Fraction of samples used for training in each random split '
+                             '(default: %(default)s)')
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable verbose debug output')
     parser.add_argument('--test', action='store_true', default=False,
@@ -130,12 +146,14 @@ def parse_args():
                         help='Run only this subtype (for array jobs)')
     args = parser.parse_args()
 
-    DATA_DIR    = args.data_dir
-    OUTPUT_DIR  = args.output_dir
-    N_MODELS    = args.n_models
-    N_JOBS      = args.n_jobs
-    DEBUG       = args.debug
-    MODELS_FILE = args.models
-    CV_STRATEGY = args.cv_strategy
+    DATA_DIR       = args.data_dir
+    OUTPUT_DIR     = args.output_dir
+    N_MODELS       = args.n_models
+    N_JOBS         = args.n_jobs
+    DEBUG          = args.debug
+    MODELS_FILE    = args.models
+    CV_STRATEGY    = args.cv_strategy
+    N_SPLITS       = args.n_splits
+    TRAIN_FRACTION = args.train_fraction
 
     return args
