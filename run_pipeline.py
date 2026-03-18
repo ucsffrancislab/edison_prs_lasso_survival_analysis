@@ -904,34 +904,46 @@ def summarize_random_split_results(results, output_dir, n_splits, min_fraction=0
                        f'random_split  N={n_runs}, train={TRAIN_FRACTION:.0%}')
 
 
-def run_smoke_test(output_dir='test_output'):
+def run_smoke_test(output_dir='test_output', strategy=None):
     """
     Full end-to-end validation test using synthetic data with planted signals.
 
     Generates 4 synthetic cohorts (matching the real pipeline structure),
     with 5 PGS models whose effect sizes are known in advance, plus 15 noise
-    models.  Runs the complete pipeline (random_split strategy, N=5 splits)
-    and verifies:
+    models.  Runs the complete pipeline under the requested strategy and
+    verifies:
       1. All planted signal PGS are selected with correct direction.
       2. Validation C-index is meaningfully above 0.5.
       3. HTML report is produced.
 
+    Parameters
+    ----------
+    output_dir : str   root directory for test output; a subdirectory named
+                       test_<strategy> is created inside it.
+    strategy   : str   'random_split', 'loco', or 'fixed'.
+                       Defaults to 'random_split' if None.
+
     Planted effects (log-HR on survival):
-      PGS_signal_A  +0.8   (harmful,   HR~2.2)
-      PGS_signal_B  +0.6   (harmful,   HR~1.8)
-      PGS_signal_C  -0.7   (protective,HR~0.5)
-      PGS_signal_D  -0.5   (protective,HR~0.6)
+      PGS_signal_A  +0.8   (harmful,    HR~2.2)
+      PGS_signal_B  +0.6   (harmful,    HR~1.8)
+      PGS_signal_C  -0.7   (protective, HR~0.5)
+      PGS_signal_D  -0.5   (protective, HR~0.6)
       PGS_signal_E   0.0   (null — should NOT be selected)
     """
     import tempfile, shutil, gzip as gz_mod
 
+    if strategy is None:
+        strategy = 'random_split'
+
+    # Each strategy writes to its own subdirectory so runs don't overwrite
+    output_dir = os.path.join(output_dir, f'test_{strategy}')
+
     print("\n" + "="*60)
-    print("FULL VALIDATION TEST  (synthetic data with planted signals)")
+    print(f"FULL VALIDATION TEST  (synthetic data, strategy={strategy})")
     print("="*60)
 
     rng = np.random.RandomState(42)
     tmp = tempfile.mkdtemp(prefix='prs_test_')
-    passed = True
     failures = []
 
     try:
@@ -1010,124 +1022,164 @@ def run_smoke_test(output_dir='test_output'):
             print(f"  {cohort}: n={n}, events={n_events} ({n_events/n:.0%})")
 
         # ------------------------------------------------------------------
-        # 2. Run the full pipeline on the synthetic data
+        # 2. Patch config for test settings
         # ------------------------------------------------------------------
-        print("\nRunning pipeline on synthetic data...")
-
-        # Temporarily override config to use synthetic-appropriate settings
         import config as _cfg
         _saved = {k: getattr(_cfg, k) for k in (
-            'ALL_COHORTS', 'CV_STRATEGY', 'N_SPLITS', 'TRAIN_FRACTION',
+            'ALL_COHORTS', 'DISCOVERY_COHORTS', 'VALIDATION_COHORT',
+            'CV_STRATEGY', 'N_SPLITS', 'TRAIN_FRACTION',
             'EPV_RATIO', 'META_P_THRESHOLD', 'MIN_COHORTS_FOR_DIRECTION',
             'MAX_CANDIDATES_PREFILT', 'LASSO_ALPHA_RULE', 'CV_FOLDS',
             'N_JOBS', 'OUTPUT_DIR', 'DATA_DIR', 'MIN_REPORT_FRACTION',
             'REQUIRE_CONSISTENT_DIR',
         )}
 
-        _cfg.ALL_COHORTS             = ['i370', 'onco', 'tcga', 'cidr']
-        _cfg.CV_STRATEGY             = 'random_split'
-        _cfg.N_SPLITS                = 5
-        _cfg.TRAIN_FRACTION          = 0.70
-        _cfg.EPV_RATIO               = 5       # more permissive for small test
-        _cfg.META_P_THRESHOLD        = 0.05
-        _cfg.MIN_COHORTS_FOR_DIRECTION = 2     # only 3 training cohorts per split
-        _cfg.MAX_CANDIDATES_PREFILT  = 100
-        _cfg.LASSO_ALPHA_RULE        = 'best'  # easier to recover signal
-        _cfg.CV_FOLDS                = 5
-        _cfg.N_JOBS                  = 4       # conservative for test
-        _cfg.OUTPUT_DIR              = output_dir
-        _cfg.DATA_DIR                = tmp
-        _cfg.MIN_REPORT_FRACTION     = 0.0     # show everything in test report
-        _cfg.REQUIRE_CONSISTENT_DIR  = True
+        # Settings common to all strategies
+        _cfg.ALL_COHORTS               = ['i370', 'onco', 'tcga', 'cidr']
+        _cfg.CV_STRATEGY               = strategy
+        _cfg.EPV_RATIO                 = 5
+        _cfg.META_P_THRESHOLD          = 0.05
+        _cfg.MIN_COHORTS_FOR_DIRECTION = 2
+        _cfg.MAX_CANDIDATES_PREFILT    = 100
+        _cfg.LASSO_ALPHA_RULE          = 'best'
+        _cfg.CV_FOLDS                  = 5
+        _cfg.N_JOBS                    = 4
+        _cfg.OUTPUT_DIR                = output_dir
+        _cfg.DATA_DIR                  = tmp
+        _cfg.MIN_REPORT_FRACTION       = 0.0
+        _cfg.REQUIRE_CONSISTENT_DIR    = True
+
+        # Strategy-specific settings
+        if strategy == 'random_split':
+            _cfg.N_SPLITS       = 5
+            _cfg.TRAIN_FRACTION = 0.70
+            strat_desc = 'Random Split N=5, train=70%'
+        elif strategy == 'loco':
+            strat_desc = 'Leave-One-Cohort-Out (LOCO)'
+        elif strategy == 'fixed':
+            _cfg.DISCOVERY_COHORTS = ['i370', 'onco', 'tcga']
+            _cfg.VALIDATION_COHORT = 'cidr'
+            strat_desc = 'Fixed (train=i370/onco/tcga, val=cidr)'
+        else:
+            raise ValueError(f"Unknown strategy: {strategy!r}. "
+                             "Choose from: random_split, loco, fixed")
 
         os.makedirs(output_dir, exist_ok=True)
 
-        # Reload globals in this module from the patched config
-        from config import (ALL_COHORTS, CV_STRATEGY, N_SPLITS, TRAIN_FRACTION,
+        # Reload locals from patched config
+        from config import (ALL_COHORTS, DISCOVERY_COHORTS, VALIDATION_COHORT,
+                            CV_STRATEGY, N_SPLITS, TRAIN_FRACTION,
                             EPV_RATIO, META_P_THRESHOLD, MIN_COHORTS_FOR_DIRECTION,
                             MAX_CANDIDATES_PREFILT, LASSO_ALPHA_RULE, CV_FOLDS,
                             N_JOBS, OUTPUT_DIR, DATA_DIR, MIN_REPORT_FRACTION,
                             REQUIRE_CONSISTENT_DIR, SUBTYPES, RANDOM_SEED,
                             COVARIATES, MIN_SAMPLES_PER_SUBTYPE, MIN_EVENTS_PER_SUBTYPE)
 
-        # Load cohort data
-        print("\nLoading synthetic cohorts...")
-        cohort_dfs = {c: load_cohort_data(c, tmp) for c in ALL_COHORTS}
-        ref_df = pd.concat(list(cohort_dfs.values()), ignore_index=True)
+        print(f"\nRunning pipeline on synthetic data  [{strat_desc}]...")
 
-        meta = ['IID', 'dataset', 'sample', 'cohort', 'source', 'age', 'sex',
-                'case', 'grade', 'idh', 'pq', 'tert', 'rad', 'chemo', 'treated',
-                'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'PC6', 'PC7', 'PC8',
-                'survdays', 'vstatus', 'grade_numeric', 'exclude']
-        pgs_cols = [c for c in ref_df.columns if c not in meta]
-        print(f"  PGS columns found: {len(pgs_cols)}  {pgs_cols}")
-
-        # Only run idh_wildtype subtype (case==1, idh==0) — simplest criteria,
-        # guaranteed to have samples in the synthetic data
-        subtypes_to_run = {'idh_wildtype': SUBTYPES['idh_wildtype']}
-
+        # ------------------------------------------------------------------
+        # 3. Run pipeline — mirrors main() for each strategy
+        # ------------------------------------------------------------------
         np.random.seed(RANDOM_SEED)
-        all_data = pd.concat(list(cohort_dfs.values()), ignore_index=True)
-        split_out = os.path.join(output_dir, 'random_splits')
-        os.makedirs(split_out, exist_ok=True)
-
-        rng2 = np.random.RandomState(RANDOM_SEED)
-        split_seeds = rng2.randint(0, 2**31, size=N_SPLITS).tolist()
-
+        subtypes_to_run = {'idh_wildtype': SUBTYPES['idh_wildtype']}
         results = {}
-        for name, criteria in subtypes_to_run.items():
-            print(f"\nProcessing subtype: {name}")
-            subtype_data = subset_by_subtype(all_data, name, criteria)
-            if subtype_data is None:
-                results[name] = {'status': 'insufficient_samples',
-                                 'cv_strategy': 'random_split'}
-                continue
 
-            n_total = len(subtype_data)
-            split_results = {}
+        if strategy == 'random_split':
+            all_data  = pd.concat([load_cohort_data(c, tmp)
+                                   for c in ALL_COHORTS], ignore_index=True)
+            split_out = os.path.join(output_dir, 'random_splits')
+            os.makedirs(split_out, exist_ok=True)
+            rng2 = np.random.RandomState(RANDOM_SEED)
+            split_seeds = rng2.randint(0, 2**31, size=N_SPLITS).tolist()
 
-            for i, seed in enumerate(split_seeds):
-                split_rng = np.random.RandomState(seed)
-                idx = subtype_data.index.to_numpy().copy()
-                split_rng.shuffle(idx)
-                n_train = int(np.floor(n_total * TRAIN_FRACTION))
-                train_idx = idx[:n_train]
-                val_idx   = idx[n_train:]
-                train_df  = all_data.loc[train_idx]
-                val_df    = all_data.loc[val_idx]
-                train_cohorts_present = list(train_df['cohort'].unique())
-                split_label = f'split_{i+1:02d}'
-                fold_out    = os.path.join(split_out, split_label)
-                os.makedirs(fold_out, exist_ok=True)
-                print(f"\n--- Split {i+1}/{N_SPLITS} ---")
+            for name, criteria in subtypes_to_run.items():
+                print(f"\nSubtype: {name}")
+                subtype_data = subset_by_subtype(all_data, name, criteria)
+                if subtype_data is None:
+                    results[name] = {'status': 'insufficient_samples',
+                                     'cv_strategy': strategy}
+                    continue
+                n_total = len(subtype_data)
+                split_results = {}
+                for i, seed in enumerate(split_seeds):
+                    split_rng = np.random.RandomState(seed)
+                    idx = subtype_data.index.to_numpy().copy()
+                    split_rng.shuffle(idx)
+                    n_train = int(np.floor(n_total * TRAIN_FRACTION))
+                    train_df = all_data.loc[idx[:n_train]]
+                    val_df   = all_data.loc[idx[n_train:]]
+                    train_cohorts_present = list(train_df['cohort'].unique())
+                    split_label = f'split_{i+1:02d}'
+                    fold_out    = os.path.join(split_out, split_label)
+                    os.makedirs(fold_out, exist_ok=True)
+                    print(f"\n--- Split {i+1}/{N_SPLITS} ---")
+                    try:
+                        split_results[split_label] = process_subtype(
+                            name, criteria, train_df, val_df, split_label,
+                            ALL_PGS, fold_out,
+                            train_cohorts=train_cohorts_present)
+                    except Exception as e:
+                        print(f"  ERROR: {e}"); traceback.print_exc()
+                        split_results[split_label] = {'status': 'error', 'error': str(e)}
+                val_cis = [v['val_cindex'] for v in split_results.values()
+                           if v.get('status') == 'complete'
+                           and v.get('val_cindex') is not None]
+                results[name] = {
+                    'status': 'complete' if val_cis else 'all_splits_failed',
+                    'cv_strategy': strategy, 'n_splits': N_SPLITS,
+                    'train_fraction': TRAIN_FRACTION, 'splits': split_results,
+                    'mean_val_cindex': float(np.mean(val_cis)) if val_cis else None,
+                    'std_val_cindex':  float(np.std(val_cis))  if val_cis else None,
+                    'n_splits_complete': len(val_cis),
+                }
+            summarize_random_split_results(results, output_dir, N_SPLITS,
+                                           min_fraction=0.0)
+
+        elif strategy == 'loco':
+            cohort_dfs = {c: load_cohort_data(c, tmp) for c in ALL_COHORTS}
+            for name, criteria in subtypes_to_run.items():
+                print(f"\nSubtype: {name}")
+                fold_results = {}
+                for val_cohort in ALL_COHORTS:
+                    train_cohorts = [c for c in ALL_COHORTS if c != val_cohort]
+                    train_df = pd.concat([cohort_dfs[c] for c in train_cohorts],
+                                         ignore_index=True)
+                    fold_out = os.path.join(output_dir, 'loco_folds', val_cohort)
+                    os.makedirs(fold_out, exist_ok=True)
+                    print(f"\n--- LOCO fold: val={val_cohort} ---")
+                    try:
+                        fold_results[val_cohort] = process_subtype(
+                            name, criteria, train_df, cohort_dfs[val_cohort],
+                            val_cohort, ALL_PGS, fold_out,
+                            train_cohorts=train_cohorts)
+                    except Exception as e:
+                        print(f"  ERROR: {e}"); traceback.print_exc()
+                        fold_results[val_cohort] = {'status': 'error', 'error': str(e)}
+                val_cis = [v['val_cindex'] for v in fold_results.values()
+                           if v.get('status') == 'complete'
+                           and v.get('val_cindex') is not None]
+                results[name] = {
+                    'status': 'complete' if val_cis else 'all_folds_failed',
+                    'cv_strategy': strategy, 'folds': fold_results,
+                    'mean_val_cindex': float(np.mean(val_cis)) if val_cis else None,
+                    'std_val_cindex':  float(np.std(val_cis))  if val_cis else None,
+                    'n_folds_complete': len(val_cis),
+                }
+            summarize_loco_results(results, output_dir, min_fraction=0.0)
+
+        elif strategy == 'fixed':
+            dfs    = [load_cohort_data(c, tmp) for c in DISCOVERY_COHORTS]
+            pooled = pd.concat(dfs, ignore_index=True)
+            cidr   = load_cohort_data(VALIDATION_COHORT, tmp)
+            for name, criteria in subtypes_to_run.items():
+                print(f"\nSubtype: {name}")
                 try:
-                    split_results[split_label] = process_subtype(
-                        name, criteria, train_df, val_df, split_label,
-                        pgs_cols, fold_out,
-                        train_cohorts=train_cohorts_present)
+                    results[name] = process_subtype(
+                        name, criteria, pooled, cidr, VALIDATION_COHORT,
+                        ALL_PGS, output_dir)
                 except Exception as e:
-                    print(f"  ERROR: {e}")
-                    traceback.print_exc()
-                    split_results[split_label] = {'status': 'error', 'error': str(e)}
-
-            val_cis = [v['val_cindex'] for v in split_results.values()
-                       if v.get('status') == 'complete' and v.get('val_cindex') is not None]
-            results[name] = {
-                'status':          'complete' if val_cis else 'all_splits_failed',
-                'cv_strategy':     'random_split',
-                'n_splits':        N_SPLITS,
-                'train_fraction':  TRAIN_FRACTION,
-                'splits':          split_results,
-                'mean_val_cindex': float(np.mean(val_cis)) if val_cis else None,
-                'std_val_cindex':  float(np.std(val_cis))  if val_cis else None,
-                'n_splits_complete': len(val_cis),
-            }
-
-        # ------------------------------------------------------------------
-        # 3. PGS consistency summary
-        # ------------------------------------------------------------------
-        summarize_random_split_results(results, output_dir, N_SPLITS,
-                                       min_fraction=0.0)
+                    print(f"  ERROR: {e}"); traceback.print_exc()
+                    results[name] = {'status': 'error', 'error': str(e)}
 
         # ------------------------------------------------------------------
         # 4. Save JSON + generate report
@@ -1138,9 +1190,8 @@ def run_smoke_test(output_dir='test_output'):
 
         try:
             from generate_report import build_html
-            html = build_html(output_dir, results, 'random_split',
-                              {'strategy_info':
-                               f'Validation Test — Random Split N={N_SPLITS}'})
+            html = build_html(output_dir, results, strategy,
+                              {'strategy_info': f'Validation Test — {strat_desc}'})
             report_path = os.path.join(output_dir, 'report.html')
             with open(report_path, 'w') as f:
                 f.write(html)
@@ -1155,66 +1206,79 @@ def run_smoke_test(output_dir='test_output'):
         print("VALIDATION CHECKS")
         print(f"{'='*60}")
 
-        # Read consistency CSV to see which PGS were selected
-        cons_path = os.path.join(output_dir, 'random_splits', 'pgs_consistency.csv')
-        selected_pgs = set()
+        # Locate consistency CSV depending on strategy
+        if strategy == 'random_split':
+            cons_path = os.path.join(output_dir, 'random_splits', 'pgs_consistency.csv')
+        elif strategy == 'loco':
+            cons_path = os.path.join(output_dir, 'loco_folds', 'pgs_consistency.csv')
+        else:
+            cons_path = None
+
+        selected_pgs   = set()
         selected_signs = {}
-        if os.path.isfile(cons_path):
+        if cons_path and os.path.isfile(cons_path):
             cons_df = pd.read_csv(cons_path)
             for _, row in cons_df.iterrows():
                 selected_pgs.add(row['PGS_ID'])
                 selected_signs[row['PGS_ID']] = np.sign(row['mean_LASSO_coef'])
+        elif strategy == 'fixed':
+            st_path = os.path.join(output_dir, 'idh_wildtype', 'summary_table.csv')
+            if os.path.isfile(st_path):
+                st_df = pd.read_csv(st_path)
+                for _, row in st_df.iterrows():
+                    selected_pgs.add(row['PGS_ID'])
+                    selected_signs[row['PGS_ID']] = np.sign(row['LASSO_coef'])
 
-        # Check 1: non-null signals selected
         print("\n  [1] Planted signal recovery:")
         for pgs, true_loghr in SIGNAL_PGS.items():
             if true_loghr == 0.0:
-                # Null signal — should not be selected (soft check)
-                sel = pgs in selected_pgs
+                sel  = pgs in selected_pgs
                 mark = '⚠' if sel else '✓'
-                print(f"    {mark}  {pgs}  (null)  {'SELECTED (unexpected)' if sel else 'not selected (correct)'}")
+                print(f"    {mark}  {pgs}  (null)  "
+                      f"{'SELECTED (unexpected)' if sel else 'not selected (correct)'}")
             else:
                 sel = pgs in selected_pgs
                 if sel:
-                    obs_sign  = selected_signs.get(pgs, 0)
-                    true_sign = np.sign(true_loghr)
+                    obs_sign     = selected_signs.get(pgs, 0)
+                    true_sign    = np.sign(true_loghr)
                     direction_ok = (obs_sign == true_sign)
                     mark = '✓' if direction_ok else '✗'
-                    dir_str = f"direction {'correct' if direction_ok else 'WRONG'} (true={true_sign:+.0f}, obs={obs_sign:+.0f})"
-                    print(f"    {mark}  {pgs}  log-HR={true_loghr:+.1f}  selected, {dir_str}")
+                    print(f"    {mark}  {pgs}  log-HR={true_loghr:+.1f}  selected, "
+                          f"direction {'correct' if direction_ok else 'WRONG'} "
+                          f"(true={true_sign:+.0f}, obs={obs_sign:+.0f})")
                     if not direction_ok:
                         failures.append(f"{pgs}: wrong direction")
                 else:
-                    print(f"    ?  {pgs}  log-HR={true_loghr:+.1f}  not selected (may be OK if EPV cap binding)")
+                    print(f"    ?  {pgs}  log-HR={true_loghr:+.1f}  "
+                          f"not selected (may be OK if EPV cap binding)")
 
-        # Check 2: C-index above 0.5
         print("\n  [2] Validation C-index:")
         for name, res in results.items():
-            mean_ci = res.get('mean_val_cindex')
+            mean_ci = res.get('mean_val_cindex') or res.get('val_cindex')
             if mean_ci is not None:
-                ok = mean_ci > 0.5
+                ok   = float(mean_ci) > 0.5
                 mark = '✓' if ok else '✗'
-                print(f"    {mark}  {name}: mean val C-index = {mean_ci:.4f}")
+                print(f"    {mark}  {name}: val C-index = {float(mean_ci):.4f}")
                 if not ok:
-                    failures.append(f"{name}: mean val C-index {mean_ci:.4f} <= 0.5")
+                    failures.append(f"{name}: val C-index {float(mean_ci):.4f} <= 0.5")
             else:
-                print(f"    ?  {name}: no complete splits")
+                print(f"    ?  {name}: no complete runs")
 
-        # Check 3: report exists
         print("\n  [3] Output files:")
-        for fname, desc in [
+        check_files = [
             (os.path.join(output_dir, 'results_summary.json'), 'results JSON'),
             (os.path.join(output_dir, 'report.html'),          'HTML report'),
-            (cons_path,                                         'PGS consistency CSV'),
-        ]:
-            exists = os.path.isfile(fname)
-            mark = '✓' if exists else '✗'
-            print(f"    {mark}  {desc}: {fname}")
+        ]
+        if cons_path:
+            check_files.append((cons_path, 'PGS consistency CSV'))
+        for fpath, desc in check_files:
+            exists = os.path.isfile(fpath)
+            mark   = '✓' if exists else '✗'
+            print(f"    {mark}  {desc}: {fpath}")
             if not exists:
                 failures.append(f"Missing: {desc}")
 
     finally:
-        # Restore config
         try:
             for k, v in _saved.items():
                 setattr(_cfg, k, v)
@@ -1233,7 +1297,7 @@ def run_smoke_test(output_dir='test_output'):
         print(f"{'='*60}")
         return False
     else:
-        print("VALIDATION PASSED  — pipeline is working as expected.")
+        print(f"VALIDATION PASSED  [{strat_desc}]")
         print(f"Output written to: {os.path.abspath(output_dir)}")
         print(f"{'='*60}")
         return True
@@ -1248,7 +1312,8 @@ def main():
                         MIN_REPORT_FRACTION)
 
     if args.test:
-        success = run_smoke_test(output_dir=OUTPUT_DIR)
+        success = run_smoke_test(output_dir=OUTPUT_DIR,
+                                 strategy=CV_STRATEGY)
         sys.exit(0 if success else 1)
 
     np.random.seed(RANDOM_SEED)
