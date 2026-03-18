@@ -405,8 +405,16 @@ def subtype_section_html(subtype, subtype_res, results_dir, strategy):
 
     cv_strat = subtype_res.get('cv_strategy', strategy)
 
-    # Collect per-run results and their directories
-    if cv_strat == 'random_split':
+    # ------------------------------------------------------------------
+    # Fixed strategy: the result IS a single process_subtype return dict.
+    # Wrap it as a one-item runs dict so the rest of the function is uniform.
+    # ------------------------------------------------------------------
+    if cv_strat == 'fixed' or ('splits' not in subtype_res and 'folds' not in subtype_res):
+        val_name = subtype_res.get('val_cohort', 'validation')
+        runs = {val_name: subtype_res}
+        runs_dir_root = results_dir
+        run_dir_fn = lambda lbl: results_dir
+    elif cv_strat == 'random_split':
         runs = subtype_res.get('splits', {})
         runs_dir_root = os.path.join(results_dir, 'random_splits')
         run_dir_fn = lambda lbl: os.path.join(runs_dir_root, lbl)
@@ -418,8 +426,19 @@ def subtype_section_html(subtype, subtype_res, results_dir, strategy):
     runs_data = list(runs.values())
     n_complete = sum(1 for r in runs_data if r.get('status') == 'complete')
     n_total    = len(runs_data)
-    mean_ci    = subtype_res.get('mean_val_cindex')
-    std_ci     = subtype_res.get('std_val_cindex')
+
+    # For fixed strategy (single run), show val C-index directly
+    if cv_strat == 'fixed' or n_total == 1:
+        single_ci = subtype_res.get('val_cindex')
+        mean_ci   = single_ci
+        std_ci    = None
+        mean_str  = fmt(mean_ci) if mean_ci is not None else '—'
+        runs_chip = ''  # don't show "Runs: 1/1"
+    else:
+        mean_ci  = subtype_res.get('mean_val_cindex')
+        std_ci   = subtype_res.get('std_val_cindex')
+        mean_str = f'{fmt(mean_ci)} ± {fmt(std_ci)}' if mean_ci is not None else '—'
+        runs_chip = f'<span class="meta-chip">Runs: {n_complete}/{n_total} complete</span>'
 
     status = subtype_res.get('status', 'unknown')
     status_class = 'complete' if status == 'complete' else 'failed'
@@ -430,20 +449,39 @@ def subtype_section_html(subtype, subtype_res, results_dir, strategy):
     delta_img = make_delta_fig(subtype, runs_data, cv_strat)
 
     summary_figs = ''
-    if dist_img or bar_img or delta_img:
+    if cv_strat == 'fixed' or n_total == 1:
+        # Single run — promote the per-run PNGs directly into the summary block
+        single_res = list(runs.values())[0] if runs else {}
+        val_name   = list(runs.keys())[0]   if runs else 'validation'
+        run_dir    = run_dir_fn(val_name)
+        km_img     = b64_png(os.path.join(run_dir, subtype, f'kaplan_meier_{val_name}.png'))
+        forest_img = b64_png(os.path.join(run_dir, subtype, 'forest_plot.png'))
+        lambda_img = b64_png(os.path.join(run_dir, subtype, 'lambda_selection.png'))
         parts = []
-        for img, cap in [(dist_img,  'C-index Distribution'),
-                         (bar_img,   'Mean ± SD C-index'),
-                         (delta_img, 'PGS Marginal Contribution (Δ vs Full Covariates)')]:
+        for img, cap in [(km_img,     'Kaplan–Meier'),
+                         (forest_img, 'Forest Plot'),
+                         (lambda_img, 'Lambda Selection')]:
             if img:
                 parts.append(f'''
                 <figure class="summary-fig">
                   <img src="{img}" alt="{cap}">
                   <figcaption>{cap}</figcaption>
                 </figure>''')
-        summary_figs = f'<div class="summary-figs-row">{"".join(parts)}</div>'
-
-    mean_str = f'{fmt(mean_ci)} ± {fmt(std_ci)}' if mean_ci is not None else '—'
+        if parts:
+            summary_figs = f'<div class="summary-figs-row">{"".join(parts)}</div>'
+    else:
+        if dist_img or bar_img or delta_img:
+            parts = []
+            for img, cap in [(dist_img,  'C-index Distribution'),
+                             (bar_img,   'Mean ± SD C-index'),
+                             (delta_img, 'PGS Marginal Contribution (Δ vs Full Covariates)')]:
+                if img:
+                    parts.append(f'''
+                    <figure class="summary-fig">
+                      <img src="{img}" alt="{cap}">
+                      <figcaption>{cap}</figcaption>
+                    </figure>''')
+            summary_figs = f'<div class="summary-figs-row">{"".join(parts)}</div>'
 
     # Compute mean delta (PGS - full_covariates)
     deltas = []
@@ -465,6 +503,7 @@ def subtype_section_html(subtype, subtype_res, results_dir, strategy):
     )
 
     subtype_display = subtype.replace('_', ' ').title()
+    n_runs_label = 'Result' if (cv_strat == 'fixed' or n_total == 1) else 'Summary Across All Runs'
 
     return f'''
     <section class="subtype-section {status_class}" id="{subtype}">
@@ -472,14 +511,14 @@ def subtype_section_html(subtype, subtype_res, results_dir, strategy):
         <h2>{subtype_display}</h2>
         <div class="subtype-meta">
           <span class="badge badge-{"ok" if status == "complete" else "fail"}">{status}</span>
-          <span class="meta-chip">Runs: {n_complete}/{n_total} complete</span>
-          <span class="meta-chip">Mean val C-index: <strong>{mean_str}</strong></span>
-          <span class="meta-chip">Mean ΔPGS vs Covariates: <strong>{delta_str_val}</strong></span>
+          {runs_chip}
+          <span class="meta-chip">Val C-index: <strong>{mean_str}</strong></span>
+          <span class="meta-chip">ΔPGS vs Covariates: <strong>{delta_str_val}</strong></span>
         </div>
       </div>
 
       <div class="summary-block">
-        <h3>Summary Across All Runs</h3>
+        <h3>{n_runs_label}</h3>
         {summary_figs if summary_figs else '<p class="muted">Insufficient data for summary figures.</p>'}
       </div>
 
@@ -877,13 +916,14 @@ def main():
         print("ERROR: results_summary.json is empty.")
         sys.exit(1)
 
-    # Infer strategy from first result that has one
-    strategy = 'unknown'
-    n_splits = None
+    # Infer strategy from first result that has one; default to 'fixed'
+    # since fixed strategy results don't store cv_strategy in the dict
+    strategy   = 'fixed'
+    n_splits   = None
     train_frac = None
     for v in results.values():
         if 'cv_strategy' in v:
-            strategy = v['cv_strategy']
+            strategy   = v['cv_strategy']
             n_splits   = v.get('n_splits')
             train_frac = v.get('train_fraction')
             break
@@ -892,6 +932,8 @@ def main():
         strat_info = f'Random Split  N={n_splits}, train={train_frac:.0%}'
     elif strategy == 'loco':
         strat_info = 'Leave-One-Cohort-Out (LOCO)'
+    elif strategy == 'fixed':
+        strat_info = 'Fixed Train/Validation Split'
     else:
         strat_info = strategy
 
