@@ -10,6 +10,11 @@ Edison Pipeline development results:
 
 https://platform.edisonscientific.com/trajectories/b11d7a5e-0329-4dc4-aa35-65d11755240d
 
+
+Claude edits:
+
+https://claude.ai/chat/8fe5934c-c1db-43df-b96c-88ac224caaeb
+
 ##	Pipeline Overview
 
 A LASSO Cox proportional hazards survival model was built using i370, onco, and tcga as pooled discovery cohorts, then validated on the held-out CIDR cohort. Four glioma subtypes were analyzed. The pipeline included:
