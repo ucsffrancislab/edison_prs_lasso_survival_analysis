@@ -935,9 +935,6 @@ def run_smoke_test(output_dir='test_output', strategy=None):
     if strategy is None:
         strategy = 'random_split'
 
-    # Each strategy writes to its own subdirectory so runs don't overwrite
-    output_dir = os.path.join(output_dir, f'test_{strategy}')
-
     print("\n" + "="*60)
     print(f"FULL VALIDATION TEST  (synthetic data, strategy={strategy})")
     print("="*60)
