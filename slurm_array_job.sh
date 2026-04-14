@@ -14,6 +14,14 @@
 
 set -euo pipefail
 
+# ── Locate the directory this script lives in ────────────────────────────────
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    PIPELINE_DIR=$(dirname "$(scontrol show job "$SLURM_JOB_ID" \
+        | awk '/Command=/{sub(/.*Command=/, ""); print $1}')")
+else
+    PIPELINE_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
+
 #mkdir -p logs
 
 # Load modules
@@ -32,8 +40,9 @@ echo "=== PRS LASSO Cox Pipeline - Array Task ==="
 echo "Start time: $(date)"
 echo "Subtype: ${SUBTYPE}"
 echo "Array task ID: ${SLURM_ARRAY_TASK_ID}"
+echo "Pipeline dir: ${PIPELINE_DIR}"
 
-python3 run_pipeline.py \
+python3 "$PIPELINE_DIR/run_pipeline.py" \
     --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     --n-jobs ${SLURM_CPUS_PER_TASK:-64} \

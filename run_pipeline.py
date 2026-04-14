@@ -14,6 +14,11 @@ Usage:
 import os
 import sys
 import time
+from pathlib import Path
+
+# ── Ensure sibling modules are importable regardless of CWD ──
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
 import json
 import gzip
 import warnings
@@ -34,8 +39,8 @@ import matplotlib.pyplot as plt
 warnings.filterwarnings('ignore')
 
 # Import config
-import config
-from config import *
+import prs_lasso_cox_config as config
+from prs_lasso_cox_config import *
 
 def dprint(*args, **kwargs):
     """Debug print - only prints if DEBUG is True."""
@@ -1021,7 +1026,7 @@ def run_smoke_test(output_dir='test_output', strategy=None):
         # ------------------------------------------------------------------
         # 2. Patch config for test settings
         # ------------------------------------------------------------------
-        import config as _cfg
+        import prs_lasso_cox_config as _cfg
         _saved = {k: getattr(_cfg, k) for k in (
             'ALL_COHORTS', 'DISCOVERY_COHORTS', 'VALIDATION_COHORT',
             'CV_STRATEGY', 'N_SPLITS', 'TRAIN_FRACTION',
@@ -1064,7 +1069,7 @@ def run_smoke_test(output_dir='test_output', strategy=None):
         os.makedirs(output_dir, exist_ok=True)
 
         # Reload locals from patched config
-        from config import (ALL_COHORTS, DISCOVERY_COHORTS, VALIDATION_COHORT,
+        from prs_lasso_cox_config import (ALL_COHORTS, DISCOVERY_COHORTS, VALIDATION_COHORT,
                             CV_STRATEGY, N_SPLITS, TRAIN_FRACTION,
                             EPV_RATIO, META_P_THRESHOLD, MIN_COHORTS_FOR_DIRECTION,
                             MAX_CANDIDATES_PREFILT, LASSO_ALPHA_RULE, CV_FOLDS,
@@ -1304,7 +1309,7 @@ def main():
     args = parse_args()
 
     # Re-import all config globals that parse_args() may have mutated.
-    from config import (DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS,
+    from prs_lasso_cox_config import (DATA_DIR, OUTPUT_DIR, N_MODELS, N_JOBS,
                         DEBUG, MODELS_FILE, CV_STRATEGY, N_SPLITS, TRAIN_FRACTION,
                         MIN_REPORT_FRACTION)
 
