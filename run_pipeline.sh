@@ -59,7 +59,7 @@ done
 
 if [[ -z "$OUTPUT_DIR" ]]; then
     echo "ERROR: --outdir is required" >&2
-    echo "Usage: sbatch slurm_single_job.sh --outdir <directory> [pipeline options]" >&2
+    echo "Usage: sbatch run_pipeline.sh --outdir <directory> [pipeline options]" >&2
     exit 1
 fi
 

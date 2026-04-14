@@ -91,8 +91,8 @@ Pipeline scripts:
 
   * config.py — Central configuration
   * run_pipeline.py — Full pipeline script with CLI arguments
-  * slurm_single_job.sh — Single 64-CPU SLURM job
-  * slurm_array_job.sh — Array job (one task per subtype)
+  * run_pipeline.sh — Single 64-CPU SLURM job
+  * archive/slurm_array_job.sh — Array job (one task per subtype)
 
 ##	Discretionary Analytical Decisions
 
