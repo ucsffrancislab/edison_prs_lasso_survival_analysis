@@ -31,7 +31,7 @@ fi
 #source venv/bin/activate 2>/dev/null || true
 
 # Set data and output directories (override via command line)
-DATA_DIR="${1:-.}"
+DATA_DIR="${1:-input}"
 OUTPUT_DIR="${2:-results}"
 EXTRA_ARGS="${@:3}"
 
