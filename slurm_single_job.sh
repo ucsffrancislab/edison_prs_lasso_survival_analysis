@@ -31,9 +31,40 @@ fi
 #source venv/bin/activate 2>/dev/null || true
 
 # Set data and output directories (override via command line)
-DATA_DIR="${1:-input}"
-OUTPUT_DIR="${2:-results}"
-EXTRA_ARGS="${@:3}"
+#DATA_DIR="${1:-input}"
+#OUTPUT_DIR="${2:-results}"
+#EXTRA_ARGS="${@:3}"
+
+# ── Parse --outdir from args, collect remainder for Python ───────────────────
+DATA_DIR="input"
+OUTPUT_DIR="results"
+PYTHON_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --datadir)
+            DATA_DIR="$2"
+            shift 2
+            ;;
+        --outdir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        *)
+            PYTHON_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$OUTPUT_DIR" ]]; then
+    echo "ERROR: --outdir is required" >&2
+    echo "Usage: sbatch slurm_single_job.sh --outdir <directory> [pipeline options]" >&2
+    exit 1
+fi
+
+# ── Create output directory ───────────────────────────────────────────────────
+mkdir -p "$OUTPUT_DIR"
 
 echo "=== PRS LASSO Cox Pipeline ==="
 echo "Start time: $(date)"
@@ -41,14 +72,17 @@ echo "Data dir: ${DATA_DIR}"
 echo "Output dir: ${OUTPUT_DIR}"
 echo "Pipeline dir: ${PIPELINE_DIR}"
 echo "CPUs: ${SLURM_CPUS_PER_TASK:-64}"
-echo "Extra args: ${EXTRA_ARGS}"
+#echo "Extra args: ${EXTRA_ARGS}"
+echo "Extra args: ${PYTHON_ARGS}"
 
 # Run the main pipeline
 python3 "$PIPELINE_DIR/run_pipeline.py" \
     --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     --n-jobs ${SLURM_CPUS_PER_TASK:-64} \
-    ${EXTRA_ARGS}
+    "${PYTHON_ARGS[@]}"
+
+#    ${EXTRA_ARGS}
 
 echo "End time: $(date)"
 echo "=== Pipeline Complete ==="
