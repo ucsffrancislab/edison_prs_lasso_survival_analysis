@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=prs_lasso_cox
-#SBATCH --output=prs_lasso_%j.out.txt
-#SBATCH --error=prs_lasso_%j.err.txt
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=490G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=240G
+#SBATCH --time=14-0
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 # PRS LASSO Cox Survival Analysis - Single Large Job
 # Runs all subtypes using Python multiprocessing on a 64-CPU node
@@ -65,6 +65,10 @@ fi
 
 # ── Create output directory ───────────────────────────────────────────────────
 mkdir -p "$OUTPUT_DIR"
+
+# ── Redirect all subsequent stdout/stderr to a log file in outdir ────────────
+exec > "${OUTPUT_DIR}/pipeline.out.txt" 2>&1
+
 
 echo "=== PRS LASSO Cox Pipeline ==="
 echo "Start time: $(date)"
