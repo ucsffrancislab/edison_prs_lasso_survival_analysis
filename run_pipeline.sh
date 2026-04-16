@@ -2,8 +2,8 @@
 #SBATCH --job-name=prs_lasso_cox
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=240G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=120G
 #SBATCH --time=14-0
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null

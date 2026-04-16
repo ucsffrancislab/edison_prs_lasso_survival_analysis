@@ -42,11 +42,18 @@ COVARIATES = ['source', 'age', 'sex', 'grade', 'treated', 'PC1', 'PC2', 'PC3',
 
 # Glioma subtypes to analyze
 # grade column contains string values: 'LGG' or 'HGG'
+#SUBTYPES = {
+#    'idh_wildtype':              {'case': 1, 'idh': 0},
+#    'lgg_idh_mutant_pq_intact':  {'case': 1, 'grade': 'LGG', 'idh': 1, 'pq': 0},
+#    'hgg_idh_mutant_pq_intact':  {'case': 1, 'grade': 'HGG', 'idh': 1, 'pq': 0},
+#    'lgg_idh_mutant_pq_codel':   {'case': 1, 'grade': 'LGG', 'idh': 1, 'pq': 1},
+#}
+
 SUBTYPES = {
-    'idh_wildtype':              {'case': 1, 'idh': 0},
-    'lgg_idh_mutant_pq_intact':  {'case': 1, 'grade': 'LGG', 'idh': 1, 'pq': 0},
-    'hgg_idh_mutant_pq_intact':  {'case': 1, 'grade': 'HGG', 'idh': 1, 'pq': 0},
-    'lgg_idh_mutant_pq_codel':   {'case': 1, 'grade': 'LGG', 'idh': 1, 'pq': 1},
+    'idh_wildtype':         {'case': 1, 'idh': 0},
+    'idh_mutant':           {'case': 1, 'idh': 1},
+    'idh_mutant_pq_intact': {'case': 1, 'idh': 1, 'pq': 0},
+    'idh_mutant_pq_codel':  {'case': 1, 'idh': 1, 'pq': 1},
 }
 
 # Minimum thresholds
